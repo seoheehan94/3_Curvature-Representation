@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <title>OOO Triplets</title>
+  <meta charset="UTF-8" />
+
+  <!-- jsPsych core -->
+  <script src="https://unpkg.com/jspsych@8.2.2"></script>
+
+  <!-- Plugins -->
+  <script src="https://unpkg.com/@jspsych/plugin-fullscreen@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-instructions@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-button-response@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-preload@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-browser-check@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-resize@2.0.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-survey-text@2.1.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-survey-multi-choice@2.1.0"></script>
+  <script type="text/javascript" src="lib/jspsych-7-pavlovia-2022.1.1.js"></script>
+
+
+  <link href="https://unpkg.com/jspsych@8.2.2/css/jspsych.css" rel="stylesheet" />
+  <style>
+    body {
+      background-color: #D3D3D3;
+    }
+
+    .jspsych-display-element {
+      font-size: 20px;
+      color: black;
+    }
+
+    /* images */
+    .ooo-img {
+      width: 240px;
+      height: 240px;
+      object-fit: contain;
+      background: none;
+      border: none;
+      padding: 0;
+    }
+
+    /* buttons */
+    .jspsych-btn {
+      padding: 5px;
+      margin: 0 10px;
+      font-size: 15px;
+      border-radius: 6px;
+    }
+  </style>
+</head>
+
+<body></body>
+
+<script>
+  /* ================== Global error helper ================== */
+  window.onerror = (msg, src, line, col) => {
+    document.body.insertAdjacentHTML(
+      'afterbegin',
+      `<pre style="color:crimson;white-space:pre-wrap">JS ERROR: ${msg}\n${src}:${line}:${col}</pre>`
+    );
+  };
+
+  /* ================== CONFIG block ================== */
+  const CONFIG = {
+    basePath: 'images',
+    CURV: [0, 1, 2],
+    NV: [1, 2, 3],
+    ANG: [45, 90, 135],
+    ROT: ['+000', '+045', '+090', '+135', '+180', '-045', '-090', '-135'],
+
+    S_BY_CURV: { 0: '0.0', 1: '0.8', 2: '1.4' },
+
+    N_BLOCKS: 9,
+
+    // ====== 75% design ======
+    EXP_PER_BLOCK: 45,     // was 60
+    CATCH_PER_BLOCK: 4,    // choose 3 or 4; currently 4 (was 5)
+
+    N_PRACTICE_AMBIG: 5,
+    N_PRACTICE_CATCH: 3,
+
+    RT_MIN_MS: 500,
+    RT_WARNING_PAUSE_MS: 3000
+  };
+
+  /* ================== Init jsPsych ================== */
+  
+
+  const jsPsych = initJsPsych({
+    on_finish: function () {
+      window.location.assign("https://utsgpsych.sona-systems.com/webstudy_credit.aspx?experiment_id=650&credit_token=aab83b9570834b78b7ea692079f479e0&survey_code=" + sona_id)
+    }
+  });
+
+  let sona_id = jsPsych.data.urlVariables()['id']
+  jsPsych.data.addProperties({
+    participant: sona_id,
+  });
+
+  // Store the experiment start time
+  const experimentStartTime = Date.now();
+
+  // Add experiment start time
+  /* jsPsych.data.addProperties({
+    experiment_start_time: experimentStartTime
+  }); */
+
+  let timeline = [];
+  var pavloviaInfo;
+
+  /* Init connection with pavlovia.org */
+  var pavlovia_init = {
+    type: jsPsychPavlovia,
+    command: "init",
+    setPavloviaInfo: function (info) {
+      console.log(info);
+      pavloviaInfo = info;
+    }
+  };
+  timeline.push(pavlovia_init);
+
+  /* ================== Helpers ================== */
+  const shuffle = a =>
+    a.map(x => ({ sort: Math.random(), value: x }))
+      .sort((u, v) => u.sort - v.sort)
+      .map(x => x.value);
+
+  const experiment_seed = Math.floor(Math.random() * 1e9);
+  jsPsych.data.addProperties({ experiment_seed });
+
+  let failed_blocks = 0;
+
+  /* ================== Feature space ================== */
+  const FEATURES = [];
+  for (let ci = 0; ci < CONFIG.CURV.length; ci++) {
+    for (let ni = 0; ni < CONFIG.NV.length; ni++) {
+      for (let ai = 0; ai < CONFIG.ANG.length; ai++) {
+        FEATURES.push({
+          id: FEATURES.length,
+          curv: CONFIG.CURV[ci],
+          nv: CONFIG.NV[ni],
+          ang: CONFIG.ANG[ai]
+        });
+      }
+    }
+  }
+
+  function sharedCount(a, b) {
+    let s = 0;
+    if (a.curv === b.curv) s++;
+    if (a.nv === b.nv) s++;
+    if (a.ang === b.ang) s++;
+    return s;
+  }
+
+  function sharedDims(a, b) {
+    const dims = [];
+    if (a.curv === b.curv) dims.push('curv');
+    if (a.nv === b.nv) dims.push('nv');
+    if (a.ang === b.ang) dims.push('ang');
+    return dims;
+  }
+
+  function featureToPath(f, rot) {
+    const s = CONFIG.S_BY_CURV[f.curv];
+    return `${CONFIG.basePath}/stim_nv${f.nv}_ang${f.ang}_s${s}_rot${rot}.png`;
+  }
+
+  /* ================== Enumerate triplets ================== */
+  /* We want:
+     - 2/2/1  (main pool)
+     - balanced 1/1/1 (main pool)
+     - 0/0/0, 2/2/2, 1/1/0 (practice ambiguous pool)
+  */
+
+  const feats_221 = [];
+  const feats_111_balanced = [];
+  const feats_000 = [];
+  const feats_222 = [];
+  const feats_110 = [];
+
+  for (let i = 0; i < FEATURES.length - 2; i++) {
+    for (let j = i + 1; j < FEATURES.length - 1; j++) {
+      for (let k = j + 1; k < FEATURES.length; k++) {
+        const A = FEATURES[i], B = FEATURES[j], C = FEATURES[k];
+        const sAB = sharedCount(A, B);
+        const sAC = sharedCount(A, C);
+        const sBC = sharedCount(B, C);
+        const patt = [sAB, sAC, sBC].sort().join('');
+
+        // main pools
+        if (patt === '122') {
+          feats_221.push([A, B, C]);
+        } else if (patt === '111') {
+
+          const dAB = sharedDims(A, B);
+          const dAC = sharedDims(A, C);
+          const dBC = sharedDims(B, C);
+
+          const okCounts = (dAB.length === 1 && dAC.length === 1 && dBC.length === 1);
+          const dimSet = new Set([dAB[0], dAC[0], dBC[0]]);
+          const okBalanced = (dimSet.size === 3);
+
+          if (okCounts && okBalanced) {
+            feats_111_balanced.push([A, B, C]);
+          }
+        }
+
+        // practice ambiguous pools
+        if (patt === '000') {
+          feats_000.push([A, B, C]);
+        } else if (patt === '222') {
+          feats_222.push([A, B, C]);
+        } else if (patt === '011') {
+          feats_110.push([A, B, C]);
+        }
+      }
+    }
+  }
+
+  console.log('2/2/1 triplets pool:', feats_221.length);            // expected 324
+  console.log('1/1/1 (balanced) pool:', feats_111_balanced.length); // expected 216
+
+  /* ================== 75% sampling with preserved ratio ================== */
+  /*
+  Original ratio:
+    324 / 540 = 0.6  (221)
+    216 / 540 = 0.4  (111 balanced)
+  
+  New total exp:
+    9 * 45 = 405
+  So:
+    0.6 * 405 = 243 (221)
+    0.4 * 405 = 162 (111)
+  Per block (45):
+    27 (221) + 18 (111)
+  */
+
+  const TOTAL_EXP_MAIN = CONFIG.N_BLOCKS * CONFIG.EXP_PER_BLOCK;
+
+  const N221_PER_BLOCK = Math.round(CONFIG.EXP_PER_BLOCK * 0.6); // 27 when EXP_PER_BLOCK=45
+  const N111_PER_BLOCK = CONFIG.EXP_PER_BLOCK - N221_PER_BLOCK;  // 18
+
+  const TOTAL_221_MAIN = CONFIG.N_BLOCKS * N221_PER_BLOCK; // 243
+  const TOTAL_111_MAIN = CONFIG.N_BLOCKS * N111_PER_BLOCK; // 162
+
+  if (feats_221.length < TOTAL_221_MAIN) {
+    throw new Error(`Not enough 2/2/1 triplets in pool (${feats_221.length}) for requested (${TOTAL_221_MAIN})`);
+  }
+  if (feats_111_balanced.length < TOTAL_111_MAIN) {
+    throw new Error(`Not enough balanced 1/1/1 triplets in pool (${feats_111_balanced.length}) for requested (${TOTAL_111_MAIN})`);
+  }
+
+  console.log('Requested per block:', { N221_PER_BLOCK, N111_PER_BLOCK, EXP_PER_BLOCK: CONFIG.EXP_PER_BLOCK });
+  console.log('Requested totals:', { TOTAL_EXP_MAIN, TOTAL_221_MAIN, TOTAL_111_MAIN });
+
+  function makeExpSpecFromTriplet(trip, kindLabel, patternLabel) {
+    const rot = CONFIG.ROT[Math.floor(Math.random() * CONFIG.ROT.length)];
+    return {
+      kind: kindLabel,              // 'exp_221' or 'exp_111'
+      pattern: patternLabel,        // '2-2-1' or '1-1-1'
+      rotation: rot,
+      features: trip,
+      stim_paths: trip.map(f => featureToPath(f, rot)),
+      feature_ids: trip.map(f => f.id)
+    };
+  }
+
+  // Sample triplets per participant (WITHOUT replacement)
+  const selected221_trips = shuffle([...feats_221]).slice(0, TOTAL_221_MAIN);
+  const selected111_trips = shuffle([...feats_111_balanced]).slice(0, TOTAL_111_MAIN);
+
+  // Build block-wise experimental specs with fixed per-block ratio
+  const EXP_BLOCKS = [];
+  for (let b = 0; b < CONFIG.N_BLOCKS; b++) {
+    const start221 = b * N221_PER_BLOCK;
+    const start111 = b * N111_PER_BLOCK;
+
+    const block221_trips = selected221_trips.slice(start221, start221 + N221_PER_BLOCK);
+    const block111_trips = selected111_trips.slice(start111, start111 + N111_PER_BLOCK);
+
+    const block221_specs = block221_trips.map(trip => makeExpSpecFromTriplet(trip, 'exp_221', '2-2-1'));
+    const block111_specs = block111_trips.map(trip => makeExpSpecFromTriplet(trip, 'exp_111', '1-1-1'));
+
+    // Shuffle within the block so exp trials are random but ratios remain exact
+    const expSpecsThisBlock = shuffle(block221_specs.concat(block111_specs));
+    EXP_BLOCKS.push(expSpecsThisBlock);
+  }
+
+  // Flatten for convenience (counts should match)
+  const EXP_MAIN_SPECS = EXP_BLOCKS.flat();
+  const n221 = EXP_MAIN_SPECS.filter(s => s.kind === 'exp_221').length;
+  const n111 = EXP_MAIN_SPECS.filter(s => s.kind === 'exp_111').length;
+  console.log('Sampled EXP counts:', { n221, n111, total: EXP_MAIN_SPECS.length });
+
+  if (EXP_MAIN_SPECS.length !== TOTAL_EXP_MAIN || n221 !== TOTAL_221_MAIN || n111 !== TOTAL_111_MAIN) {
+    throw new Error(`Sampled EXP counts mismatch: got total=${EXP_MAIN_SPECS.length}, 221=${n221}, 111=${n111}`);
+  }
+
+  /* ================== Practice ambiguous triplets ================== */
+  const ambiguous_pool = [];
+  feats_000.forEach(trip => ambiguous_pool.push({ triplet: trip, subpattern: '0/0/0' }));
+  feats_222.forEach(trip => ambiguous_pool.push({ triplet: trip, subpattern: '2/2/2' }));
+  feats_110.forEach(trip => ambiguous_pool.push({ triplet: trip, subpattern: '1/1/0' }));
+
+  const selectedAmbiguous = shuffle(ambiguous_pool).slice(0, CONFIG.N_PRACTICE_AMBIG);
+
+  const practice_ambiguous_specs = selectedAmbiguous.map(item => {
+    const triplet = item.triplet;
+    const rot = CONFIG.ROT[Math.floor(Math.random() * CONFIG.ROT.length)];
+    return {
+      kind: 'practice_ambiguous',
+      pattern: item.subpattern,
+      rotation: rot,
+      features: triplet,
+      stim_paths: triplet.map(f => featureToPath(f, rot)),
+      feature_ids: triplet.map(f => f.id)
+    };
+  });
+
+  /* ================== Catch (attention check) triplets ================== */
+  function makeCatchSpecs(n, kindLabel) {
+    const specs = [];
+    for (let t = 0; t < n; t++) {
+      const base = FEATURES[Math.floor(Math.random() * FEATURES.length)];
+      const dimIndex = Math.floor(Math.random() * 3); // 0=curv,1=nv,2=ang
+      let odd = { ...base };
+
+      if (dimIndex === 0) {
+        const other = CONFIG.CURV.filter(v => v !== base.curv);
+        odd.curv = other[Math.floor(Math.random() * other.length)];
+      } else if (dimIndex === 1) {
+        const other = CONFIG.NV.filter(v => v !== base.nv);
+        odd.nv = other[Math.floor(Math.random() * other.length)];
+      } else {
+        const other = CONFIG.ANG.filter(v => v !== base.ang);
+        odd.ang = other[Math.floor(Math.random() * other.length)];
+      }
+
+      const feats = [base, base, odd]; // 3/2/2 structure
+      const rot = CONFIG.ROT[Math.floor(Math.random() * CONFIG.ROT.length)];
+
+      specs.push({
+        kind: kindLabel,
+        pattern: '3-2-2',
+        rotation: rot,
+        features: feats,
+        stim_paths: feats.map(f => featureToPath(f, rot)),
+        feature_ids: feats.map(f => f.id),
+        odd_index: 2,
+        changed_dim: dimIndex
+      });
+    }
+    return specs;
+  }
+
+  const practice_catch_specs = makeCatchSpecs(CONFIG.N_PRACTICE_CATCH, 'practice_catch');
+  const TOTAL_CATCH_MAIN = CONFIG.N_BLOCKS * CONFIG.CATCH_PER_BLOCK;
+  const CATCH_SPECS = makeCatchSpecs(TOTAL_CATCH_MAIN, 'catch');
+
+  console.log('practice catch specs:', practice_catch_specs.length);
+  console.log('main catch specs:', CATCH_SPECS.length);
+
+  /* Example catch triplet for instructions (first practice catch) */
+  const example_catch = practice_catch_specs[0];
+  const example_catch_html = `
+  <div style="display:flex; justify-content:center; gap:20px; margin-top:15px;">
+    ${example_catch.stim_paths.map(p => `<img class="ooo-img" src="${p}">`).join('')}
+  </div>
+`;
+
+  /* ================== Interleave helper for arbitrary exp/catch counts ================== */
+  function interleaveCatch(expTrials, catchTrials) {
+    const nCatch = catchTrials.length;
+    if (nCatch === 0) return expTrials;
+
+    const nExp = expTrials.length;
+    const base = Math.floor(nExp / nCatch);
+    const remainder = nExp % nCatch; // first 'remainder' chunks get +1
+
+    let out = [];
+    let idx = 0;
+
+    for (let c = 0; c < nCatch; c++) {
+      const chunkSize = base + (c < remainder ? 1 : 0);
+      const chunk = expTrials.slice(idx, idx + chunkSize);
+      idx += chunkSize;
+
+      const insertPos = Math.floor(Math.random() * (chunk.length + 1));
+      out.push(...chunk.slice(0, insertPos));
+      out.push(catchTrials[c]);
+      out.push(...chunk.slice(insertPos));
+    }
+
+    out.push(...expTrials.slice(idx));
+    return out;
+  }
+
+  /* ================== Preload ================== */
+  /* Preload ONLY the images used by:
+     - sampled main exp specs (75%)
+     - main catch specs
+     - practice ambiguous specs
+     - practice catch specs
+  */
+  const ALL_SPECS_FOR_PRELOAD = EXP_MAIN_SPECS
+    .concat(CATCH_SPECS)
+    .concat(practice_ambiguous_specs)
+    .concat(practice_catch_specs);
+
+  const PRELOAD_LIST = Array.from(new Set(
+    ALL_SPECS_FOR_PRELOAD.flatMap(s => s.stim_paths)
+  ));
+
+  timeline.push({
+    type: jsPsychPreload,
+    images: PRELOAD_LIST,
+    message: '<p>Loading images...</p>',
+    error_message: '<p style="color:red">Some images failed to load (check folder structure).</p>',
+    show_detailed_errors: true,
+    continue_after_error: true
+  });
+
+  /* ================== Browser checks ================== */
+  timeline.push({
+    type: jsPsychBrowserCheck,
+    inclusion_function: d => d.mobile === false,
+    exclusion_message: d => d.mobile ? '<p>Please use a laptop/desktop computer.</p>' : ''
+  });
+
+  timeline.push({
+    type: jsPsychBrowserCheck,
+    minimum_width: 800,
+    minimum_height: 600
+  });
+
+  /* ================== Intro & demographics ================== */
+  timeline.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+    <div style="width:700px;">
+      <p><strong>Welcome!</strong></p>
+      <p>In this experiment, you will see triplets of simple shapes and choose the <b>odd-one-out</b>.</p>
+      <p>Press "Continue" to begin.</p>
+      <p><strong>Please do not close this tab until the experiment finishes.</strong></p>
+    </div>`,
+    choices: ["Continue"]
+  });
+
+  timeline.push({ type: jsPsychFullscreen, fullscreen_mode: true });
+
+  timeline.push({
+    type: jsPsychSurveyText,
+    questions: [{ prompt: "Please enter your age (in years):", name: 'Age', required: true }],
+    on_finish: d => jsPsych.data.addProperties({ age: d.response.Age })
+  });
+
+  timeline.push({
+    type: jsPsychSurveyMultiChoice,
+    questions: [{
+      prompt: "Please indicate your gender:", name: 'Sex',
+      options: ["Male", "Female", "Other", "Prefer not to say"], required: true
+    }],
+    on_finish: d => jsPsych.data.addProperties({ sex: d.response.Sex })
+  });
+
+  timeline.push({
+    type: jsPsychResize,
+    item_width: 3 + 3 / 8, item_height: 2 + 1 / 8,
+    prompt: `
+    <p>We will measure your screen size for the accurate image presentation. You will need a credit or ID card.</p>
+    <p>Click and drag the lower right corner of the box until the box is the same size as the card held up to the screen.</p>
+    <p>Once the box is the size of a credit card, press 'continue' button below.</p>`,
+    pixels_per_unit: 130
+  });
+
+
+
+  /* ================== Instructions (incl. attention checks) ================== */
+  timeline.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+    <div style="width:800px;">
+      <p>Thank you for your interest in this study!</p>
+      <p>The experiment takes approximately 30 minutes. Finishing the full session is required for credit.</p>
+      <p>Careful, attentive responses are essential for high-quality data. Rushed or ineffortful responses can mask meaningful patterns in how people perceive visual information.</p>
+      <p>Your thoughtful participation genuinely helps advance scientific understanding of the human mind, and we greatly appreciate your time and engagement.</p>
+    </div>`,
+    choices: ["Continue"]
+  });
+
+  timeline.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+    <div style="width:800px;">
+      <p>On each trial, you will see three shapes. You will do <b>${CONFIG.N_BLOCKS} blocks</b> in total.</p>
+      <p>Your task is to select the shape that is the <b>odd-one-out</b>.</p>
+      <p>Please focus on the <b>how curvy the shapes are</b> when deciding which one is most different from the other two.</p>
+      <p>There is no strictly correct answer, we are interested in your intuitive judgment.</p>
+    </div>`,
+    choices: ["Continue"]
+  });
+
+  timeline.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+    <div style="width:800px;">
+      <p>However, there are also <b>attention check trials</b>.</p>
+      <p>On these trials, there is <b>exactly one correct odd-one-out</b> (two shapes are identical, and the third looks similar).</p>
+      <ul>
+        <p>There are several attention check trials in every block</p>
+        <p>You must answer at least <b>75%</b> of these correctly in a block to successfully pass that block.</p>
+        <p>If you fail <b>3 or more blocks</b>, your data may be <b>rejected</b>, and you may choose to stop the experiment at any time.</p>
+      </ul>
+      <p>After each block, you will see feedback indicating whether you passed that block.</p>
+      <p>Here is an <b>example attention check triplet</b>:</p>
+      ${example_catch_html}
+    </div>`,
+    choices: ["Continue"]
+  });
+
+  /* ================== Practice instructions ================== */
+  timeline.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+    <div style="width:800px;">
+      <p>You will now complete <b>${CONFIG.N_PRACTICE_AMBIG + CONFIG.N_PRACTICE_CATCH} practice trials</b>:</p>
+      <ul>
+        <p><b>${CONFIG.N_PRACTICE_AMBIG} practice trials</b> with <b>no obvious correct answer</b>.</p>
+        <p><b>${CONFIG.N_PRACTICE_CATCH} practice trials</b> that are <b>attention checks</b> with a clearly correct odd-one-out.</p>
+      </ul>
+      <p>On attention check practice trials, you will be told that it is an attention check.</p>
+    </div>`,
+    choices: ["Start practice"]
+  });
+
+  /* ================== Trial builder helpers ================== */
+  function makeOOOTrial(spec, global_index, block_label, block_index, trial_in_block, isPractice) {
+
+    const original_paths = spec.stim_paths;
+    const order = shuffle([...original_paths]); // random L/M/R
+
+    let correct_response = null;
+    let odd_pos = null;
+
+    const isCatch = (spec.kind === 'catch' || spec.kind === 'practice_catch');
+
+    if (isCatch && typeof spec.odd_index === 'number') {
+      const odd_path = original_paths[spec.odd_index];
+      correct_response = order.indexOf(odd_path);
+      odd_pos = correct_response;
+    }
+
+    const tripletFeatures = spec.features.map(f => ({
+      id: f.id, curv: f.curv, nv: f.nv, ang: f.ang
+    }));
+
+    let headerExtra = '';
+    if (spec.kind === 'practice_catch') {
+      headerExtra = `<p style="color:#b00;"><b>This is an attention check practice trial.</b></p>`;
+    }
+
+    return {
+      type: jsPsychHtmlButtonResponse,
+      stimulus: `
+      <div style="text-align:center;">
+        <p><b>Which one is the odd one out?</b></p>
+        ${headerExtra}
+      </div>`,
+      choices: order,
+      button_html: choice =>
+        `<button class="jspsych-btn"><img class="ooo-img" src="${choice}"></button>`,
+      render_on_canvas: false,
+      data: {
+        block: block_label,
+        block_index: block_index,
+        trial_in_block: trial_in_block,
+        global_trial_index: global_index,
+        trial_kind: spec.kind,
+        pattern: spec.pattern,
+        rotation: spec.rotation,
+        feature_ids: spec.feature_ids,
+        features_triplet: JSON.stringify(tripletFeatures),
+        stim_left: order[0],
+        stim_middle: order[1],
+        stim_right: order[2],
+        is_practice: isPractice,
+        is_catch: isCatch,
+        correct_response: correct_response,
+        odd_position: odd_pos
+      },
+      on_finish: data => {
+        data.chosen_index = data.response;
+        data.chosen_stimulus =
+          data.response != null
+            ? [data.stim_left, data.stim_middle, data.stim_right][data.response]
+            : null;
+
+        const m = /stim_nv(\d+)_ang(\d+)_s([0-9.]+)_rot([+-]\d{3})\.png$/.exec(data.chosen_stimulus || '');
+        if (m) {
+          data.chosen_nv = +m[1];
+          data.chosen_ang = +m[2];
+          data.chosen_s = +m[3];
+          data.chosen_rot = m[4];
+
+          const sVal = m[3];
+          const curvFromS = Object.entries(CONFIG.S_BY_CURV).find(([k, v]) => v === sVal);
+          data.chosen_curv = curvFromS ? +curvFromS[0] : null;
+        }
+
+        if (data.is_catch && data.correct_response != null) {
+          data.correct = (data.response === data.correct_response);
+        } else {
+          data.correct = null;
+        }
+      }
+    };
+  }
+
+  function makeOOOTrialWithWarning(spec, global_index, block_label, block_index, trial_in_block, isPractice) {
+    const coreTrial = makeOOOTrial(spec, global_index, block_label, block_index, trial_in_block, isPractice);
+
+    const warningTrial = {
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: function () {
+        return `
+        <div style="width:800px;">
+          <p>Your last response was too fast.</p>
+          <p>Please take enough time to view the shapes carefully before responding.</p>
+          <p>You will continue automatically in a few seconds.</p>
+        </div>`;
+      },
+      choices: "NO_KEYS",
+      trial_duration: CONFIG.RT_WARNING_PAUSE_MS,
+      data: {
+        trial_kind: 'rt_warning'
+      }
+    };
+
+    return {
+      timeline: [
+        coreTrial,
+        {
+          timeline: [warningTrial],
+          conditional_function: function () {
+            const last = jsPsych.data.get().last(1).values()[0];
+            return last && last.rt != null && last.rt < CONFIG.RT_MIN_MS;
+          }
+        }
+      ]
+    };
+  }
+
+  /* ================== Practice timeline ================== */
+  let global_index_counter = 1;
+
+  const PRACTICE_SPECS = shuffle(
+    practice_ambiguous_specs.concat(practice_catch_specs)
+  );
+
+  PRACTICE_SPECS.forEach((spec, i) => {
+    const trial_num = i + 1;
+
+    const t = makeOOOTrialWithWarning(
+      spec,
+      global_index_counter++,
+      'practice',
+      0,
+      trial_num,
+      true
+    );
+    timeline.push(t);
+
+    if (spec.kind === 'practice_catch') {
+      timeline.push({
+        timeline: [{
+          type: jsPsychHtmlButtonResponse,
+          stimulus: function () {
+            return `
+          <div style="width:800px;">
+            <p>This was an <b>attention check practice trial</b>.</p>
+            <p>Your answer was <b>INCORRECT</b>.</p>
+            <p>On attention check trials, two shapes are identical and the odd one differs in exactly one feature.</p>
+          </div>`;
+          },
+          choices: ['Continue'],
+          data: { trial_kind: 'practice_catch_feedback' }
+        }],
+        conditional_function: function () {
+          const lastPCatch = jsPsych.data.get().filter({
+            trial_kind: 'practice_catch',
+            is_practice: true
+          }).last(1).values()[0];
+          return lastPCatch && lastPCatch.correct === false;
+        }
+      });
+    }
+  });
+
+  timeline.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `<p>Practice is complete.</p>
+            <p>When you are ready, click below to start the main experiment.</p>
+            <p>The main task has <b>${CONFIG.N_BLOCKS} blocks</b>. You can take short breaks between blocks.</p>
+            <p>On all trials, please respond thoughtfully and <b>pick the odd-one-out based on curvature.</b></p>
+            <p>If you respond too fast, you will see a warning screen.</p>`,
+    choices: ["Start main task"]
+  });
+
+  /* ================== Main task blocks ================== */
+  const catch_for_main = shuffle([...CATCH_SPECS]);
+  const TRIALS_PER_BLOCK_TOTAL = CONFIG.EXP_PER_BLOCK + CONFIG.CATCH_PER_BLOCK;
+
+  for (let b = 0; b < CONFIG.N_BLOCKS; b++) {
+
+    // Experimental trials already balanced + shuffled within block
+    const blockExp = EXP_BLOCKS[b];
+
+    // Catch trials for this block
+    const blockCatch = catch_for_main.slice(
+      b * CONFIG.CATCH_PER_BLOCK,
+      (b + 1) * CONFIG.CATCH_PER_BLOCK
+    );
+
+    // Interleave 1 catch per chunk (even spacing + jitter)
+    const mergedSpecs = interleaveCatch(blockExp, shuffle(blockCatch));
+
+    console.log(`Block ${b + 1} length (should be ${TRIALS_PER_BLOCK_TOTAL}):`, mergedSpecs.length);
+
+    mergedSpecs.forEach((spec, i) => {
+      const t = makeOOOTrialWithWarning(
+        spec,
+        global_index_counter++,
+        `block_${b + 1}`,
+        b + 1,
+        i + 1,
+        false
+      );
+      timeline.push(t);
+    });
+
+    // block feedback after each block
+    const blockIndexForFeedback = b + 1;
+    timeline.push({
+      type: jsPsychHtmlButtonResponse,
+      stimulus: function () {
+        const blockIndex = blockIndexForFeedback;
+        const blockCatchData = jsPsych.data.get().filter({
+          block_index: blockIndex,
+          is_catch: true,
+          is_practice: false
+        });
+
+        const nCatch = blockCatchData.count();
+        const nCorrect = blockCatchData.filter({ correct: true }).count();
+        const pass = (nCatch > 0 && (nCorrect / nCatch) >= 0.75);
+        const pct = nCatch > 0 ? Math.round((nCorrect / nCatch) * 100) : 0;
+        const blocksLeft = CONFIG.N_BLOCKS - blockIndex;
+
+        const projectedFails = failed_blocks + (pass ? 0 : 1);
+
+        let html = `<div style="width:800px;">`;
+        html += `<p>You have completed <b>block ${blockIndex} of ${CONFIG.N_BLOCKS}</b>.</p>`;
+        html += `<p>On the attention check trials in this block, your accuracy was <b>${pct}%</b>.</p>`;
+
+        if (pass) {
+          html += `<p style="color:#006400;"><b>Great job!!</b> You <b>PASSED</b> this block.</p>`;
+          html += `<p>Thank you for paying close attention, this really helps us get high-quality data.</p>`;
+          if (blocksLeft > 0) {
+            html += `<p>You have <b>${blocksLeft}</b> block${blocksLeft === 1 ? '' : 's'} left. Feel free to take a brief break if you need one before continuing.</p>`;
+            html += `<p>Please focus on the <b>how curvy the shapes are</b> when deciding which one is most different from the other two.</p>`;
+          } else {
+            html += `<p>You’ve finished all blocks in the task.</p>`;
+          }
+        } else {
+          html += `<p style="color:#b00;">This means you <b>FAILED</b> this block.</p>`;
+          html += `<p>Total blocks failed so far: <b>${projectedFails}</b>.</p>`;
+          html += `<p>If you fail <b>3 or more blocks</b> in total, your data may be rejected.</p>`;
+          if (blocksLeft > 0) {
+            html += `<p>Please try to slow down and pay close attention in the remaining blocks.</p>`;
+            html += `<p>Please focus on the <b>how curvy the shapes are</b> when deciding which one is most different from the other two.</p>`;
+          }
+        }
+
+        html += `<p>Click "Continue" to proceed.</p>`;
+        html += `</div>`;
+        return html;
+      },
+      choices: ['Continue'],
+      on_finish: function (data) {
+        const blockIndex = blockIndexForFeedback;
+        const blockCatchData = jsPsych.data.get().filter({
+          block_index: blockIndex,
+          is_catch: true,
+          is_practice: false
+        });
+        const nCatch = blockCatchData.count();
+        const nCorrect = blockCatchData.filter({ correct: true }).count();
+        const pass = (nCatch > 0 && (nCorrect / nCatch) >= 0.75);
+
+        if (!pass) failed_blocks++;
+
+        data.trial_kind = 'block_feedback';
+        data.block_index = blockIndex;
+        data.block_failed = !pass;
+        data.blocks_failed_total = failed_blocks;
+      }
+    });
+  }
+
+  /* ================== Post-experiment questionnaire ================== */
+  timeline.push({
+    type: jsPsychSurveyMultiChoice,
+    questions: [
+      {
+        prompt: "Do you have experience with visual arts (e.g., painting, drawing, design, digital art)?",
+        name: "art_experience",
+        options: [
+          "Yes, formal training",
+          "Yes, informal or self-taught experience",
+          "Limited, occasional experience",
+          "No experience"
+        ],
+        required: true
+      }
+    ],
+    on_finish: function (data) {
+      jsPsych.data.addProperties({
+        art_experience: data.response.art_experience
+      });
+    }
+  });
+
+  timeline.push({
+    type: jsPsychSurveyText,
+    questions: [
+      {
+        prompt: "Please describe below any strategy or approach you may have used when choosing the odd-one-out.",
+        name: "strategy_open",
+        rows: 5,
+        columns: 70,
+        required: false
+      }
+    ],
+    on_finish: function (data) {
+      // Optional: also store it as a top-level property for convenience
+      jsPsych.data.addProperties({
+        strategy_open: data.response.strategy_open
+      });
+    }
+  });
+
+  /* ================== End screen ================== */
+  timeline.push({
+    type: jsPsychHtmlButtonResponse,
+    stimulus: `
+    <div style="width:800px; text-align:center;">
+      <h2 style="color:#2c7a2c;">🎉 You’ve completed the experiment! 🎉</h2>
+      <p>Thank you so much for your time and attention. Your participation was really helpful :)</p>
+      <p>Your responses were successfully recorded.</p>
+      <p style="margin-top:20px;"><b>Press the button below to debrief.</b></p>
+    </div>
+  `,
+    choices: ["Continue"]
+  });
+
+
+  /* Debriefing */
+  var debriefing = {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div style='width: 1300px;'>
+        <p style="font-weight:bold;">Debriefing</p>
+        <p style="font-size:18px;text-align:left;">This experiment belongs to cognitive psychology, specifically investigating mid-level visual perception and the representational structure of shape space.</p>
+        <p style="font-size:18px;text-align:left;">While curvature is recognized as important for object recognition, we lack understanding of how it's
+represented as a continuous perceptual dimension. Traditional explicit rating tasks may direct
+attention to curvature rather than revealing spontaneous perceptual organization. No prior work has
+mapped the behavioral representational space from controlled curvature manipulations. It's unknown
+whether curvature acts as a unified dimension, multiple independent features, or one factor among
+many shaping shape similarities.</p>
+        <p style="font-size:18px;text-align:left;">We constructed stimulus spaces (line contours or abstract shapes) with parametric curvature
+manipulations (curviness, angle, number of vertices). Using odd-one-out (OOO) triplet, we collected
+implicit similarity judgments to derive a behavioral representational space through representational
+similarity analysis. This reveals how curvature parameters relate to emergent perceptual structure
+without predefined assumptions.  
+            Hypotheses: Curvature-related features will systematically structure the representational similarity
+space. We test whether curvature functions as a unified dimension or multiple independent features,
+and whether parametric variations predict similarity patterns implicitly.
+Independent Variables: curviness, angularity, number of vertices.
+Dependent Variables: Similarity judgments from OOO triplet tasks.
+Control procedures: Randomized stimulus order, equated orientation of the contour. 
+            <p style="font-size:18px;text-align:left;">This research reveals how curvature organizes perceptual shape space, informing theories of mid-level
+vision and object recognition. Findings will guide computational models and explain how the visual
+system spontaneously organizes shape information, with applications in computer vision and design
+aesthetics. For further information on the topic of orientation, please see the below papers and the
+papers cited in them.
+            <br>- Chuquichambi, E. G., Vartanian, O., Skov, M., Corradi, G. B., Nadal, M., Silvia, P. J., & Munar,
+E. (2022). How universal is preference for visual curvature? A systematic review and meta‐analysis.
+Annals of the New York Academy of Sciences, 1518(1), 151–165. 
+            <br>- Cacioppo, J. T., Freberg, L. A., & Waggoner Denton, A. (2020). Chapter 5: Sensation and
+perception. In Discovering psychology: The science of mind (1st Canadian ed.). Nelson Cengage
+Adapted.</p>
+        <p style="font-size:18px;text-align:left;">In order to maintain the integrity of this study, please do not discuss your experiences in the experiment with other students who could potentially be participants. 
+            If others know all details of the study before participating, it could affect the results in unexpected ways.</p>
+        <p style="font-size:18px;text-align:left;">If you have any questions about the research, please feel free to contact seohee.han@mail.utoronto.ca.
+            If you have questions about your rights as a participant you can contact the Office of Research Ethics at 416-946-3273 or email: ethics.review@utoronto.ca.</p>
+        <p>Now, you will answer a question for the course credit.</p>
+        <p>Press spacebar to continue</p>
+        </div>
+      `,
+    choices: [' ']
+  };
+  timeline.push(debriefing);
+
+  let questionlist = [
+    {
+      prompt: "A psychologist who studies information processing and decision making would probably be considered a _________ psychologist.",
+      name: 'Q1',
+      options: ['Developmental', 'Cognitive', 'Social'],
+      required: true
+    },
+    {
+      prompt: "What task did you complete during the experiment?",
+      name: 'Q2',
+      options: ['Memory task', 'Rating task', 'Odd-one-out (OOO) triplet task'],
+      required: true
+    },
+    {
+      prompt: "Which feature was NOT manipulated in the experiment?",
+      name: 'Q3',
+      options: ['Colour',
+        'Curviness',
+        'Angle'],
+      required: true
+    },
+    {
+      prompt: "What type of study is this?",
+      name: 'Q4',
+      options: ['Experimental study', 'Observational study', 'Case study'],
+      required: true
+    },
+    {
+      prompt: "What is the purpose of the control variables?",
+      name: 'Q5',
+      options: ['To make the experiment more difficult for participants', 'To ensure that differences in responses are due to independent variables, not due to other factors', 'To help participants guess the correct answers'],
+      required: true
+    },
+    {
+      prompt: "A variable that is being measured, is called _______. ",
+      name: 'Q6',
+      options: ['Independent variable', 'Dependent variable', 'Both independent & dependent variable'],
+      required: true
+    }
+  ]
+
+  let choosequestion = jsPsych.randomization.randomInt(0, 5);
+  var questiontrial = {
+    type: jsPsychSurveyMultiChoice,
+    questions: [questionlist[choosequestion]]
+  };
+  timeline.push(questiontrial);
+
+  // At the end of the experiment, calculate total experiment time
+  jsPsych.data.addProperties({
+    total_experiment_time: Date.now() - experimentStartTime
+  });
+
+
+  var pavlovia_finish = {
+    type: jsPsychPavlovia,
+    command: "finish",
+    participantId: sona_id,
+    dataFilter: function (data) {
+      return data;
+    },
+    completedCallback: function () {
+      alert('data successfully submitted!');
+     // window.location.assign(
+     //   "https://utsgpsych.sona-systems.com/webstudy_credit.aspx?experiment_id=650&credit_token=aab83b9570834b78b7ea692079f479e0&survey_code=" + sona_id
+     // );
+    }
+  };
+  timeline.push(pavlovia_finish);
+
+  /* Exit fullscreen */
+  timeline.push({
+    type: jsPsychFullscreen,
+    fullscreen_mode: false
+  });
+
+   /*
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `
+      <p>You may now close this window.</p>  
+    `
+  });
+  */
+
+  /* ================== Run experiment ================== */
+  jsPsych.run(timeline);
+</script>
+
+</html>

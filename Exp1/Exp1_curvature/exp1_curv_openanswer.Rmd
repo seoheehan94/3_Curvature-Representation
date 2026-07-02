@@ -1,0 +1,198 @@
+---
+title: "Untitled"
+output: html_document
+date: "2026-02-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# extract_open_strategy.R
+
+set.seed(4228)
+
+pacman::p_load(tidyverse, conflicted)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lag",    "dplyr")
+conflict_prefer("summarise", "dplyr")
+conflict_prefer("mutate", "dplyr")
+
+# -----------------------------
+# Paths + files
+# -----------------------------
+datapath <- "data/"
+DataFiles <- list.files(path = datapath, pattern = "\\.csv$", full.names = TRUE)
+
+# Helper: first non-missing value (or NA)
+first_nonmissing <- function(x) {
+  x <- x[!is.na(x) & x != ""]
+  if (length(x) == 0) NA else x[1]
+}
+
+# -----------------------------
+# Extract per-subject fields
+# -----------------------------
+strategy_table <- purrr::map_dfr(DataFiles, function(f) {
+
+  df <- readr::read_csv(
+    f,
+    col_types = cols(.default = col_guess()),
+    na = c("", "NA", "null", "NaN")
+  )
+
+  # Extract subject ID from filename (same pattern you used)
+  subj_id <- stringr::str_match(basename(f), "Han_curvRep1D_(\\d+)_")[, 2]
+
+  # Safety: if regex fails, fall back to filename without extension
+  if (is.na(subj_id) || subj_id == "") {
+    subj_id <- tools::file_path_sans_ext(basename(f))
+  }
+
+  # Pull one value from each column (rows all identical per your description)
+  strategy_open_val <- if ("strategy_open" %in% names(df)) first_nonmissing(df$strategy_open) else NA
+  art_experience_val <- if ("art_experience" %in% names(df)) first_nonmissing(df$art_experience) else NA
+
+  tibble(
+    subj_id = subj_id,
+    strategy_open = strategy_open_val,
+    art_experience = art_experience_val
+  )
+})
+
+# If multiple files per subject exist, keep the first non-missing per subject
+strategy_table <- strategy_table %>%
+  group_by(subj_id) %>%
+  summarise(
+    strategy_open = first_nonmissing(strategy_open),
+    art_experience = first_nonmissing(art_experience),
+    .groups = "drop"
+  ) %>%
+  arrange(as.numeric(subj_id)) %>%  # harmless if subj_id is numeric-like
+  mutate(subj_id = as.character(subj_id))
+
+# -----------------------------
+# Write output
+# -----------------------------
+out_path <- file.path(getwd(), "strategy_open_art_experience_by_subject.csv")
+readr::write_csv(strategy_table, out_path)
+
+message("Wrote: ", out_path)
+
+```
+
+```{r}
+# 01_build_strategy_dataset.R
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(stringr)
+  library(readr)
+  library(tibble)
+})
+
+# ---- 1) Participant IDs (ORDER matters: matches your earlier ID list) ----
+ids <- c(
+  66310, 66349, 66403, 66406, 66412, 66571, 66766, 66799, 66847,
+  66976, 67069, 67216, 67327, 67336, 67384, 67432, 67438, 67639,
+  67660, 67762, 67822, 67975, 68095, 68179, 68455, 68608, 68674,
+  68692, 68701, 69091, 69199, 69328, 69436, 69571, 70012, 70933
+)
+
+# ---- 2) Responses (same order as ids) ----
+responses <- c(
+  "I looked at what stood out to me first. I paid attention to the roundness of the shape, the number of curves, and the size or direction of the curve.",
+  "I generally looked at the overall shape of the line like how many bumps it had, where it started and ended, was it more or less curvy. A lot of decisions were instinctual because there was multiple valid “odd ones” so in those cases I chose one by instinct. The most difficult choices were when there was an ascending pattern which made the decisions difficult. I didn’t”t differentiate very strongly on if the tip of the bump was  sharp or round but rather the number of bumps and the steepness or angle of the bump",
+  "I really had three criteria and picked based off of which ever shape most distinctly fit any of the three. Generally I pocked a shape if it seemed to be doing a different thing from the others, i.e. moving/sloping/angling in another direction from the others. Or else If one had noticeably less/more curves than the others I picked that. Lastly if the shape of its angles were noticeably more hard or soft from the others. I compared the three shapes and picked accordingly.",
+  "The number of bumps and how straight/curved an object was.",
+  "counting the number of lumps, the shapes of the curves and bends",
+  "I usually choose the one with the most different general shape, prioritizing that over the sharpness of the curves, unless the curve drastically different",
+  "I tried to see how manu \"bumps\" there were or how much the shape took up space of the box. Some of them were confusing, but others were really obvious.",
+  "My reasoning:\nI made some priorities:\n1) Curvature difference, either zigzag or curved.\n2) If they are the same type of curvature, checking if they are part of each other, like if there is part of one cut and it is shown.\n3) If the same type of curvature, and the same number of zigzags, smoother or steeper one.\nThank you, it was an interesting experience.",
+  "When I chose the odd one out I tended to chose the one that was either the only corner or the only curve. I also looked at the depth and positioning and if they were similar I would pic the other as the odd one out.",
+  "I repeated to myself \"which doesn't belong\" then compared the three and chose the one that was the least similar to the others",
+  "NA",
+  "I focused on how many bumps each chape had as well as weather it had soft or sharp corners",
+  "I first looked at the ends of each curve to see if any were different (one pointy two curved), and made my decision based on that. If it was the case that all three were curved and no pointy, I look to see equivalency between two images (example two of the images had three bumps while the final image had two) and based my choice on that.",
+  "number of bumbs, direction of bumbs, round vs sharp",
+  "looking for the sharpness first, thenlooking for the radius of the cruve",
+  "I looked at the number of curves and the height of each curve.",
+  "If there were two lines with smooth curves and one hard corner line, I would pick the hard corner and vice versa. If there seemed to be a progression to the lines (small hump to large hump) I would choose the one that did not fit the progression. If the waves were very shallow in two lines, but very steep in the third, I would choose the third. The same is true for the opposite. If the shapes of two lines looked similar (like a staircase), but the shape of the third was different (like a V-shape), I would choose the third. I think I was more likely to eliminate hard corner lines because they feel very brash and aggressive so if there was a choice between three hard corner lines, I would pick the one with the harshest and most corners. If all else failed, I would close my eyes and re-open them, whichever shape drew my eyes to it was the one I chose.",
+  "i would just close my eyes and open them and pick which my eyes went too first",
+  "First I looked at the general shape, mainly how many 'humps' did it have. After that, I looked at the curvature of the shapes, how smooth the lines were.",
+  "Looking at general cuve and similar shapes to determine odd one out",
+  "I looked at the slopes. I grouped similar-sloped curves together, even if they had different numbers of bumps. Sometimes, I would zone out on purpose to separate my eyes, which would help me distinguish the odd one out easier.",
+  "I would choose the one that has a different curve, especially the peaks.",
+  "find the numbers of curls or sharp points",
+  "I looked at which was the most triangle like (pointy) or which had more curves/points.",
+  "I observed if there were any changes in angularity and went from there. I also used the curve of one shape to explain the curve of another (i.e., a curved line was the same curved line used to draw a wave pattern).",
+  "sharp corners vs soft cocrners\ngeneral vibes",
+  "Determined if the edged were curves or sharp corners.",
+  "Focusing on the curves; imagining one of the images being merged with another to see if they match up",
+  "Number of curves; if all images had the same number of curves then by curve shape (jagged or soft)",
+  "I Choose by looking at the tips of the shape",
+  "I often looked at the edges of the lines to see the way in which the line began to curve, and compared that with the other images.",
+  "I looked at whether the lines were sharp or curvy, whether they were smaller or filling the entire box and also by the number of curves or spikes",
+  "I would look at how the line looks and how many \"bumps\" in the line there was while looking at how straight or curved the lines are. I would compare the number of bumps and curviness of the lines to pick the odd one out.",
+  "if line was pointed or curved",
+  "I just looked for the one that didn't match, it wasn't really a strategy",
+  "I looked for pairs that looked like they could be continuations of each other, but also made exceptions when the shape, smoothness, or patterns felt right together."
+)
+
+stopifnot(length(ids) == length(responses))
+
+# ---- 3) Cluster assignment (3 clusters; keeps >= 5 per cluster) ----
+# Cluster 1 = Feature-Based Analytical Comparison (default)
+# Cluster 2 = Similarity Grouping & Relational Matching
+# Cluster 3 = Intuitive / Salience / Minimal-report
+cluster2_ids <- c(66976, 67438, 67822, 68692, 69091, 69328, 70933)
+cluster3_ids <- c(67639, 68608, 69571, 70012, 67069)  # include NA as minimal-report/heuristic
+
+strategy_df <- tibble(
+  id = ids,
+  response_raw = responses
+) %>%
+  mutate(
+    cluster = case_when(
+      id %in% cluster2_ids ~ "Relational grouping",
+      id %in% cluster3_ids ~ "Intuitive / salience",
+      TRUE ~ "Feature-based analytical"
+    ),
+    cluster = factor(cluster, levels = c("Feature-based analytical", "Relational grouping", "Intuitive / salience"))
+  )
+
+# ---- 4) Feature-mention coding (regex dictionaries) ----
+# NOTE: these are "mention" flags (not exclusive, not implying primary use)
+rx_number <- "(\\bnumber\\b|\\bcount\\b|\\bcounting\\b|\\bmany\\b|\\bbump\\b|\\bbumps\\b|\\bhump\\b|\\bhumps\\b|\\blump\\b|\\blumps\\b|\\bzigzag\\b|\\bspike\\b|\\bspikes\\b|\\bcurves\\b|\\bcurve(s)?\\b)"
+rx_curvature <- "(\\bcurv\\w*\\b|\\bsmooth\\w*\\b|\\bround\\w*\\b|\\bradius\\b|\\bsoft\\b|\\bjagged\\b|\\bzigzag\\b|\\bstraight\\b)"
+rx_angle <- "(\\bangle\\w*\\b|\\bangular\\w*\\b|\\bslope\\w*\\b|\\bsteep\\w*\\b|\\bsharp\\w*\\b|\\bcorner\\w*\\b|\\bpoint\\w*\\b|\\btips?\\b|\\bedges?\\b|\\btriangle\\b|\\bV-shape\\b)"
+rx_relational <- "(\\bleast similar\\b|\\bsimilar\\b|\\bmatch\\w*\\b|\\bmerged\\b|\\bmerge\\b|\\bcontinu\\w*\\b|\\bpart of\\b|\\bequivalen\\w*\\b|\\bprogression\\b|\\bpattern\\b|\\bstaircase\\b|\\bwhich doesn't belong\\b|\\bgroup\\w*\\b|\\bpairs?\\b)"
+rx_intuition <- "(\\binstinct\\w*\\b|\\bvibes\\b|\\bstood out\\b|\\bclose my eyes\\b|\\bmy eyes\\b|\\bdrew my eyes\\b|\\bzone out\\b|\\bno strategy\\b|\\bNA\\b|\\bobvious\\b)"
+
+strategy_df <- strategy_df %>%
+  mutate(
+    response_lc = str_to_lower(response_raw),
+    mention_number     = as.integer(str_detect(response_lc, rx_number)),
+    mention_curvature  = as.integer(str_detect(response_lc, rx_curvature)),
+    mention_angle      = as.integer(str_detect(response_lc, rx_angle)),
+    mention_relational = as.integer(str_detect(response_lc, rx_relational)),
+    mention_intuition  = as.integer(str_detect(response_lc, rx_intuition))
+  ) %>%
+  select(-response_lc)
+
+# ---- 5) Quick sanity checks ----
+message("Cluster sizes:")
+print(table(strategy_df$cluster))
+
+message("Feature mention rates:")
+print(colMeans(strategy_df %>% select(starts_with("mention_"))))
+
+# ---- 6) Write out ----
+out_file <- "strategy_participant_level.csv"
+write_csv(strategy_df, out_file)
+message("Wrote: ", out_file)
+
+```
+

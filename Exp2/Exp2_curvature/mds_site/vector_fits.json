@@ -1,0 +1,74 @@
+[
+  {
+    "experiment": "Exp2",
+    "condition": "curvature",
+    "cluster": "1",
+    "feature": "sm",
+    "feature_label": "Smoothness",
+    "D1": 0.3917,
+    "D2": 0.4154,
+    "D3": -0.821,
+    "r2": 0.0824,
+    "pval": 0.588
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "curvature",
+    "cluster": "1",
+    "feature": "nv",
+    "feature_label": "NV",
+    "D1": -0.5606,
+    "D2": 0.2673,
+    "D3": -0.7837,
+    "r2": 0.8353,
+    "pval": 0.001
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "curvature",
+    "cluster": "1",
+    "feature": "rng",
+    "feature_label": "Range",
+    "D1": -0.569,
+    "D2": -0.208,
+    "D3": 0.7956,
+    "r2": 0.6921,
+    "pval": 0.001
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "curvature",
+    "cluster": "2",
+    "feature": "sm",
+    "feature_label": "Smoothness",
+    "D1": 0.5846,
+    "D2": 0.233,
+    "D3": 0.7771,
+    "r2": 0.1231,
+    "pval": 0.377
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "curvature",
+    "cluster": "2",
+    "feature": "nv",
+    "feature_label": "NV",
+    "D1": 0.9389,
+    "D2": -0.0534,
+    "D3": -0.34,
+    "r2": 0.1265,
+    "pval": 0.362
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "curvature",
+    "cluster": "2",
+    "feature": "rng",
+    "feature_label": "Range",
+    "D1": 0.1145,
+    "D2": -0.8834,
+    "D3": -0.4545,
+    "r2": 0.1027,
+    "pval": 0.443
+  }
+]

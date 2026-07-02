@@ -1,0 +1,3313 @@
+---
+title: "Exp2_Curvature_Analysis"
+output: html_document
+date: "2026-03-10"
+---
+
+```{r setup, include=FALSE}
+set.seed(4228)
+
+pacman::p_load(tidyverse, tidyr, knitr, lme4, broom, plotly, ggplot2, vegan, mlogit, sandwich, lmtest, pbapply, gmnl, tibble, smacof, ppcor, conflicted)
+library(dplyr)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lag",    "dplyr")
+conflict_prefer("summarise", "dplyr")
+conflict_prefer("mutate", "dplyr")
+options(knitr.kable.NA = '') # hide NA with knitr function
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load data
+datapath <- 'data/'
+DataFiles <- list.files(path = datapath, pattern = "*.csv", full.names = TRUE)
+
+df_raw_all <- data.frame()
+
+for (k in 1:length(DataFiles)) {
+  df_temp <- read_csv(
+    DataFiles[k],
+    col_types = cols(
+      rt = col_double(),
+      response = col_character(),
+      correct_response = col_character(),
+      correct = col_logical(),
+      block_failed = col_logical(),
+      blocks_failed_total = col_double(),
+      is_practice = col_logical(), 
+      is_catch = col_logical(),    
+      chosen_N = col_double(),     
+      chosen_curv = col_double(),
+      .default = col_guess()
+    ),
+    na = c("", "NA", "null", "NaN")
+  )
+  
+  # Extract subject ID from filename
+  subj_id <- str_match(basename(DataFiles[k]), "Han_curvRep2D_(\\d+)_")[, 2]
+  df_temp$subj_id <- subj_id
+  
+  df_raw_all <- bind_rows(df_raw_all, df_temp)
+}
+
+df_raw_all <- df_raw_all %>% 
+  select(subj_id = participant, age, sex, rt, stimulus, response, block, block_index, trial_in_block, global_trial_index, trial_kind, pattern, feature_ids, features_triplet, stim_left, stim_middle, stim_right, is_practice, is_catch, correct_response, correct, chosen_index, chosen_stimulus, chosen_N, chosen_range, chosen_curv, chosen_seed)
+
+```
+
+## Subjects Summaries
+```{r}
+participant_info <- df_raw_all %>%
+  distinct(subj_id, age, sex)
+
+mean_age <- mean(participant_info$age, na.rm = TRUE)
+sd_age   <- sd(participant_info$age, na.rm = TRUE)
+age_range <- range(participant_info$age, na.rm = TRUE)
+
+sex_counts <- participant_info %>%
+  count(sex)
+
+mean_age
+sd_age
+age_range
+sex_counts
+```
+
+
+```{r}
+df_raw_all %>% count(subj_id, trial_kind) %>% arrange(subj_id, desc(n)) %>% filter(trial_kind == "exp_221" | trial_kind == "exp_111")
+
+# in experiment design code, when generating all the possible triplets of the patterns 2/2/2 and 2/1/1, there should have been 324 exp_222 and 216 exp_111. so 540 total, and 75% these triplets should be used. All participants see subset of 405 triplets.
+# participants don't all see all the same triplets 
+```
+
+```{r}
+# catch trial accuracy for main trials
+# main_catch <- df_raw_all %>%
+#   filter(trial_kind == "catch")
+# 
+# main_catch %>%
+#   group_by(participant) %>%
+#   summarise(
+#     n_catch = n(),
+#     n_correct = sum(correct == TRUE, na.rm = TRUE),
+#     accuracy = mean(correct == TRUE, na.rm = TRUE))
+
+# each participant must get 75% catch trial accuracy min in each block to pass that block
+block_catch_summary <- df_raw_all %>%
+  filter(trial_kind == "catch") %>%
+  group_by(subj_id, block_index) %>%
+  summarise(
+    n_catch = n(),
+    n_correct = sum(correct == TRUE, na.rm = TRUE),
+    acc = n_correct / n_catch,
+    blockUse = if_else(acc >= 0.75, 1, 0),  # 1 if acc >= 75%, else 0
+    .groups = "drop"
+  )
+
+# Count failed blocks per participant and assign subUse flag
+subject_quality <- block_catch_summary %>%
+  group_by(subj_id) %>%
+  summarise(
+    n_failed_blocks = sum(blockUse == 0),  # Count blocks where blockUse = 0
+    subUse = if_else(n_failed_blocks > 3, 0, 1),  # Flag: 0 if >3 failed, else 1
+    .groups = "drop"
+  )
+
+# View results
+subject_quality
+subject_quality %>%
+  count(subUse)
+
+# Add subUse flag to original data frame
+df_raw_all <- df_raw_all %>%
+  left_join(subject_quality %>% select(subj_id, subUse), 
+            by = "subj_id") %>%
+  left_join(block_catch_summary %>% select(subj_id, block_index, blockUse),
+            by = c("subj_id", "block_index"))
+
+```
+
+
+
+```{r}
+# Checking the RT warnings (= RTs faster than 500)
+rt_warnings <- df_raw_all %>%
+  filter(trial_kind == "rt_warning") %>%
+  count(subj_id)
+rt_warnings
+
+df_raw_all %>%
+  filter(rt < 500) %>% 
+  select(subj_id, rt, block_index, trial_in_block, trial_kind)
+```
+
+```{r}
+# Calculate total percentage of trials excluded
+exclusion_summary <- df_raw_all %>%
+  filter(subUse == 1,  # Only subjects with subUse = 1
+         trial_kind %in% c('exp_111', 'exp_221')) %>%  # Only these trial types
+  group_by(subj_id) %>%
+  summarise(
+    total_trials = n(),  # Total trials before exclusion
+    excluded_trials = sum(blockUse == 0 | rt < 500, na.rm = TRUE),  # Excluded trials
+    included_trials = sum(blockUse == 1 & rt >= 500, na.rm = TRUE),  # Included trials
+    .groups = "drop"
+  )
+
+# Calculate overall exclusion percentage
+overall_exclusion <- exclusion_summary %>%
+  summarise(
+    total_trials_all = sum(total_trials),
+    total_excluded = sum(excluded_trials),
+    total_included = sum(included_trials),
+    exclusion_pct = (total_excluded / total_trials_all) * 100
+  )
+
+# View results
+overall_exclusion
+```
+```{r}
+# Leave only the trials for analysis
+df_trials <- df_raw_all %>%
+  filter(subUse == 1,  # Only subjects with subUse = 1
+         blockUse == 1,
+         rt >= 500,
+         trial_kind %in% c('exp_111', 'exp_221'))  # Only these trial types
+```
+
+```{r}
+# each row = one item in the triad. 
+df_items <- df_trials %>%
+  group_by(subj_id) %>%
+  mutate(triad_id = row_number()) %>%
+  ungroup() %>%
+  select(
+    subj_id, triad_id, chosen_index,
+    stim_left, stim_middle, stim_right
+  ) %>%
+  pivot_longer(
+    cols = c(stim_left, stim_middle, stim_right),
+    names_to = "position",
+    values_to = "stim_path"
+  ) %>%
+  mutate(
+    pos_index = case_when(
+      position == "stim_left"   ~ 0L,
+      position == "stim_middle" ~ 1L,
+      position == "stim_right"  ~ 2L
+    ),
+    choice = as.integer(pos_index == chosen_index),
+    is_chosen = pos_index == chosen_index,
+    rng  = as.integer(str_match(stim_path, "circle_rng(\\d+)_")[,2]),
+    nv    = as.integer(str_match(stim_path, "N(\\d+)_curv")[,2]),
+    sm   = as.numeric(str_match(stim_path, "curv([0-9.]+)_seed")[,2]),
+    seed = as.integer(str_match(stim_path, "seed(\\d+)")[,2])
+  )
+
+head(df_items)
+
+```
+
+
+##### Multinomial Logistic #####
+
+```{r}
+
+# Logit optimization asks:
+#   “What weights best predict which item wins the competition in each triad?”
+#   "what feature helps me pick the odd item?"
+# This favors:
+#   features that are diagnostic in competitive contexts
+#   features that dominate when they differ
+#   even if they don’t structure overall similarity well
+
+# RDM optimization asks:
+#   “What weights best preserve all pairwise similarities across all contexts?”
+#   "what does the perceptual space look like?"
+# This favors:
+#   globally consistent dimensions
+#   dimensions that structure the whole space
+#   even if they don’t always determine the odd-one-out
+# 
+
+
+```
+
+```{r}
+# Alternative-Specific (Long) Format
+# one row per alternative (item) per choice set (triad)
+# the choice depends on which item is most different, not the absolute attribute 
+# values. By centering on the triad mean, we are explicitly modeling "how odd is this 
+# item?"
+
+alt_data_diff <- df_items %>%
+  group_by(subj_id, triad_id) %>%
+  mutate(   # deviation from the triad mean
+    sm_dev = abs(sm - mean(sm)),
+    nv_dev   = abs(nv - mean(nv)),
+    rng_dev  = abs(rng - mean(rng))
+  ) %>%
+  ungroup() %>%
+  mutate(trial_id = paste0(subj_id, "_", triad_id)) %>%
+  mutate(   # standardizes by the max deviation (makes attributes relative/comparative)
+    sm_dev_s = sm_dev / max(sm_dev),
+    nv_dev_s   = nv_dev   / max(nv_dev),
+    rng_dev_s  = rng_dev  / max(rng_dev)
+  ) %>%
+  select(subj_id, trial_id, pos_index, choice, 
+         sm_dev_s, nv_dev_s, rng_dev_s)
+
+
+# Convert to mlogit format
+mlogit_data <- mlogit.data(
+  data = alt_data_diff,
+  shape = "long",
+  choice = "choice",
+  chid.var = "trial_id",
+  alt.var = "pos_index",
+  id.var = "subj_id"
+)
+
+# Fit multinomial logit model
+# coefficient signs positive = more likely to choose (larger deviation = more "odd")
+# No individual-specific variables with alternative-specific effects
+# No individual-specific variables with generic effects
+model_m <- gmnl(
+  choice ~ sm_dev_s + nv_dev_s + rng_dev_s | 0 | 0 | 0,
+  data = mlogit_data,
+  model = "mixl",
+  ranp = c(            # random slopes for each attribute across subjects
+    sm_dev_s = "n",
+    nv_dev_s   = "n",
+    rng_dev_s  = "n"
+  ),
+  panel = TRUE
+)
+
+summary(model_m)
+# Fixed Effects (Mean Coefficients)
+# Random Effects (Standard Deviations)
+
+# Extract normalized weights
+beta_hat <- coef(model_m)
+beta_mean <- beta_hat[c("sm_dev_s", "nv_dev_s", "rng_dev_s")]
+
+weights_mnl <- abs(beta_mean) / sum(abs(beta_mean))
+weights_mnl
+
+```
+```{r}
+# --- GLOBAL SETTINGS ---
+# Define consistent levels and colors for all plots
+feat_levels <- c("Smoothness", "NV", "Range")
+
+# 1. Extract Fixed Effects (Mean Coefficients)
+# We filter for the mean parameters, ignoring the 'sd.' parameters
+beta_est <- coef(model_m)[c("sm_dev_s", "nv_dev_s", "rng_dev_s")]
+beta_se  <- sqrt(diag(vcov(model_m)))[c("sm_dev_s", "nv_dev_s", "rng_dev_s")]
+
+df_fixed <- data.frame(
+  Feature = names(beta_est),
+  Estimate = as.numeric(beta_est),
+  SE = as.numeric(beta_se)
+) %>%
+  mutate(
+    Lower = Estimate - 1.96 * SE,
+    Upper = Estimate + 1.96 * SE,
+    # Clean names for plotting
+    Feature = factor(Feature, levels = c("sm_dev_s", "nv_dev_s", "rng_dev_s"),
+                     labels = feat_levels)
+  )
+
+# Plot: Mean Effects
+ggplot(df_fixed, aes(x = Feature, y = Estimate, fill = Feature)) +
+  # Bar plot
+  geom_col(width = 0.6, color = "black") + 
+  # Error bars (95% CI)
+  geom_errorbar(aes(ymin = Lower, ymax = Upper), width = 0.2, linewidth = 0.8) +
+  # Classic theme (removes grid lines and background)
+  theme_classic(base_size = 14) +
+  # Labels
+  labs(
+    title = "Population Mean Sensitivity",
+    subtitle = "Higher estimates = stronger preference for the deviant item",
+    x = NULL,
+    y = "Log-Odds Estimate (Mean Beta)"
+  ) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, max(df_fixed$Upper) * 1.1))+
+  theme(legend.position = "none")
+
+# 2. Extract Individual Conditional Means (Corrected)
+features_raw <- c("sm_dev_s", "nv_dev_s", "rng_dev_s")
+
+df_indiv <- do.call(rbind, lapply(1:3, function(i) {
+  eff <- effect.gmnl(model_m, par = features_raw[i], effect = "ce")
+  
+  # create data frame without relying on row names
+  data.frame(
+    Value = as.numeric(eff$mean),  # Flattens the matrix/vector
+    Feature = feat_levels[i]
+  )
+}))
+
+df_indiv$Feature <- factor(df_indiv$Feature, levels = feat_levels)
+
+# Plot: Density Distributions of Subject Strategies
+ggplot(df_indiv, aes(x = Value, fill = Feature)) +
+  geom_density(alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  facet_wrap(~Feature, scales = "free") +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Heterogeneity in Strategy",
+    subtitle = "Distribution of individual subject coefficients",
+    x = "Individual Sensitivity (Beta)",
+    y = "Density"
+  ) +
+  theme(legend.position = "none")
+
+
+# 3. Predicted Probability Curve (Marginal Effect)
+# Function to calculate Logit Probability for a standardized deviation x (0 to 1)
+# Assumes a 3-choice task where other 2 items have 0 deviation (baseline)
+predict_prob <- function(beta, x_vals) {
+  # Utility of target = beta * x
+  # Utility of distractors = beta * 0 = 0
+  # Prob = exp(u_target) / (exp(u_target) + exp(0) + exp(0))
+  exp(beta * x_vals) / (exp(beta * x_vals) + 1 + 1)
+}
+
+# Create a sequence of deviations from 0 to 1
+x_seq <- seq(0, 1, length.out = 100)
+
+# Generate curves for the Mean Observer
+df_pred <- data.frame()
+for(i in 1:3) {
+  probs <- predict_prob(beta_est[i], x_seq)
+  df_pred <- rbind(df_pred, data.frame(
+    Deviation = x_seq,
+    Probability = probs,
+    Feature = feat_levels[i]
+  ))
+}
+df_pred$Feature <- factor(df_pred$Feature, levels = feat_levels)
+
+# Plot: Sensitivity Curves
+ggplot(df_pred, aes(x = Deviation, y = Probability, color = Feature)) +
+  geom_line(linewidth = 1.2) +
+  geom_hline(yintercept = 1/3, linetype = "dotted") +
+  scale_y_continuous(limits = c(0.3, 1), labels = scales::percent) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Behavioral Sensitivity (Mean Observer)",
+    x = "Standardized Deviation (0 = Mean, 1 = Max)",
+    y = "Probability of Choosing Item"
+  )
+
+```
+
+```{r}
+#Using MNL weights for clustering
+library(cluster)   # for silhouette
+library(factoextra) # for cluster visualization
+# =========================
+# 1. Fit per-subject MNL to get weights
+# =========================
+
+# Extract subject IDs
+subj_ids <- unique(alt_data_diff$subj_id)
+
+# Function to compute empirical odds per subject
+subject_weights <- lapply(subj_ids, function(s) {
+  dat_subj <- alt_data_diff %>% filter(subj_id == s)
+  
+  # Fit multinomial logit for this subject only
+  m_subj <- mlogit(choice ~ sm_dev_s + nv_dev_s + rng_dev_s | 0,
+                   data = mlogit.data(dat_subj, shape="long", choice="choice",
+                                      chid.var="trial_id", alt.var="pos_index"))
+  beta <- coef(m_subj)
+  tibble(
+    subj_id = s,
+    sm   = beta["sm_dev_s"],
+    nv     = beta["nv_dev_s"],
+    rng    = beta["rng_dev_s"]
+  )
+})
+
+weights_df <- bind_rows(subject_weights)
+
+# Normalize weights per subject
+weights_df <- weights_df %>%
+  rowwise() %>%
+  mutate(
+    total = sum(abs(c(sm, nv, rng))),
+    sm = sm / total,
+    nv   = nv   / total,
+    rng  = rng  / total
+  ) %>%
+  select(-total)
+
+# =========================
+# 2. Choosing the optimal number of clusters
+# =========================
+# Convert to matrix
+weight_mat <- as.matrix(weights_df %>% select(sm, nv, rng))
+set.seed(4228)
+
+# Elbow method
+fviz_nbclust(weight_mat, kmeans, method = "wss") +
+  labs(subtitle = "Elbow method")
+
+# Silhouette method
+fviz_nbclust(weight_mat, kmeans, method = "silhouette") +
+  labs(subtitle = "Average silhouette method") # higher = better clustering
+
+
+
+
+#prettier plots 
+# =========================
+# 3. ELBOW plot
+# =========================
+
+max_k <- 8
+wss <- numeric(max_k)
+
+for (k in 1:max_k) {
+  km <- kmeans(weight_mat, centers = k, nstart = 50)
+  wss[k] <- km$tot.withinss
+}
+
+plot(
+  1:max_k, wss,
+  type = "b", pch = 19,
+  xlab = "Number of clusters (k)",
+  ylab = "Total within-cluster SS",
+  main = "Elbow Method for Optimal k"
+)
+
+# =========================
+# 4. SILHOUETTE plot
+# =========================
+pp_dist <- dist(weight_mat)
+sil_width <- rep(NA_real_, max_k)
+
+for (k in 2:max_k) {
+  km <- kmeans(weight_mat, centers = k, nstart = 50)
+  sil <- silhouette(km$cluster, dist(weight_mat))
+  sil_width[k] <- mean(sil[, "sil_width"])
+}
+
+plot(
+  2:max_k, sil_width[2:max_k],
+  type = "b", pch = 19,
+  xlab = "Number of clusters (k)",
+  ylab = "Mean silhouette width",
+  main = "Silhouette Method for Optimal k"
+)
+
+abline(v = which.max(sil_width), lty = 2, col = "red")
+```
+
+
+```{r}
+# =========================
+# 3. Fit k-means with chosen k
+# =========================
+k_opt <- 2  # replace with chosen number based on elbow/silhouette plots
+kres <- kmeans(weight_mat, centers = k_opt, nstart = 50)
+weights_df$cluster <- kres$cluster
+
+cluster_sizes <- table(weights_df$cluster)
+# Order clusters, largest first
+cluster_order <- names(sort(cluster_sizes, decreasing = TRUE))
+# Re-map largest to Cluster 1
+weights_df$cluster <- as.numeric(factor(weights_df$cluster, levels = cluster_order))
+
+# =========================
+# 4. Visualize clusters
+# =========================
+fviz_cluster(kres, data = weight_mat, geom = "point", stand = FALSE,
+             ellipse.type = "convex") + 
+  theme_minimal() +
+  labs(title = paste("K-means Clustering of Subject Weights (k =", k_opt, ")"))
+
+cluster_means <- weights_df %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_sm = mean(sm, na.rm = TRUE),
+    mean_nv   = mean(nv, na.rm = TRUE),
+    mean_rng  = mean(rng, na.rm = TRUE),
+    n_subjects = n()
+  )
+cluster_means
+
+######################
+# bar plot 
+summary_df <- weights_df %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_sm = mean(sm, na.rm = TRUE),
+    se_sm   = sd(sm, na.rm = TRUE) / sqrt(n()),
+    
+    mean_nv = mean(nv, na.rm = TRUE),
+    se_nv   = sd(nv, na.rm = TRUE) / sqrt(n()),
+    
+    mean_rng = mean(rng, na.rm = TRUE),
+    se_rng   = sd(rng, na.rm = TRUE) / sqrt(n()),
+    
+    n = n()
+  )
+
+plot_df <- summary_df %>%
+  pivot_longer(
+    cols = starts_with("mean_"),
+    names_to = "attribute",
+    values_to = "mean_value"
+  ) %>%
+  mutate(
+    se = case_when(
+      attribute == "mean_sm" ~ se_sm,
+      attribute == "mean_nv" ~ se_nv,
+      attribute == "mean_rng" ~ se_rng
+    ),
+    attribute = gsub("mean_", "", attribute),
+    attribute = factor(attribute, levels = c("sm", "nv", "rng"))
+  )
+
+ggplot(plot_df, aes(x = factor(cluster), y = mean_value, fill = attribute)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7),
+           color = "black", width = 0.7) +
+  
+  geom_errorbar(
+    aes(ymin = mean_value - se, ymax = mean_value + se),
+    position = position_dodge(width = 0.7),
+    width = 0.2,
+    size = 0.6
+  ) +
+  
+  labs(
+    title = "Mean Weights per Cluster",
+    x = "Cluster",
+    y = "Mean Normalized β",
+    fill = "Attribute"
+  ) +
+  
+  theme_classic(base_size = 14) +
+  theme_classic(base_size = 14) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.8))
+
+# =========================
+# 5. Silhouette score
+# =========================
+dist_mat <- dist(weight_mat, method = "euclidean")
+sil <- silhouette(weights_df$cluster, dist_mat)
+mean(sil[, 3])  # average silhouette width 
+```
+
+
+##### Behavioral Representational Dissimilarity Matrix (RDM) #####
+```{r}
+# OVERVIEW: Constructs subject-wise and averaged behavioral RDMs from triad choice data.
+# - Data: Subjects choose 1 of 3 stimuli per triad (27 unique stimuli).
+# - Dissimilarity D for pair (i,j): P(pair split as chosen-non_chosen | co-occur in triad).
+# - High D = often discriminated = behaviorally dissimilar.
+
+```
+
+```{r}
+items_short <- df_items %>%
+  select(subj_id, triad_id, pos_index, is_chosen, rng, nv, sm)
+
+pairs <- df_items %>%
+  select(subj_id, triad_id, pos_index, is_chosen, rng, nv, sm) %>%
+  inner_join(items_short, by = c("subj_id", "triad_id"), suffix = c("_i", "_j")) %>%
+  filter(pos_index_i < pos_index_j) %>%
+  arrange(subj_id, triad_id, pos_index_i, pos_index_j) %>%
+  group_by(subj_id, triad_id) %>%
+  mutate(
+    pair_in_triad = row_number(),
+    trial_id = cur_group_id() 
+  ) %>%
+  ungroup() %>%
+  transmute(
+    subj_id,
+    triad_id,
+    pair_in_triad,
+    sm_i = sm_i, nv_i = nv_i, rng_i = rng_i,
+    sm_j = sm_j, nv_j = nv_j, rng_j = rng_j,
+    chosen_i = is_chosen_i,
+    chosen_j = is_chosen_j,
+    same_sm  = as.integer(sm_i == sm_j),
+    same_nv  = as.integer(nv_i   == nv_j),
+    same_rng = as.integer(rng_i  == rng_j),
+    co_group   = as.integer(!chosen_i & !chosen_j),
+    diff_sm  = as.factor(abs(sm_i - sm_j)),
+    diff_nv    = as.factor(abs(nv_i   - nv_j)),
+    diff_rng   = as.factor(abs(rng_i  - rng_j)),
+    trial_id
+  )
+
+
+```
+
+
+
+
+```{r}
+# Step 1: Prep data and extract chosen-non_chosen pairs
+stim_lookup <- df_items %>%
+  select(sm, nv, rng) %>%
+  distinct(sm, nv, rng) %>%
+  arrange(sm, nv, rng) %>%
+  mutate(stim_id = row_number())
+
+stopifnot(nrow(stim_lookup) == 27)
+
+triad_long <- df_items %>%
+  select(subj_id, triad_id, pos_index, is_chosen, sm, nv, rng) %>%
+  left_join(stim_lookup, by = c("sm", "nv", "rng")) %>%
+  rename(stim_id = stim_id)
+
+pairs_chosen_nc <- triad_long %>%
+  group_by(subj_id, triad_id) %>%
+  filter(n() == 3) %>%  # Sanity: exactly 3 stimuli/triad
+  mutate(chosen_flag = is_chosen == 1) %>%
+  summarise(
+    chosen_id = stim_id[chosen_flag],
+    non_ids = list(stim_id[!chosen_flag]),
+    .groups = "drop"
+  ) %>%
+  unnest_longer(non_ids, values_to = "non_id") %>%
+  mutate(
+    low  = pmin(chosen_id, non_id),   # Unordered pair for aggregation
+    high = pmax(chosen_id, non_id)
+  )
+# Output: One row per subj-triple-chosen_non pair (2 per triplet).
+
+```
+
+```{r}
+# Step 2: Compute per-subject D
+pairs_id <- df_items %>%
+  select(subj_id, triad_id, pos_index, is_chosen, sm, nv, rng) %>%
+  inner_join(., ., by = c("subj_id", "triad_id"), suffix = c("_i", "_j")) %>%
+  filter(pos_index_i < pos_index_j) %>%
+  left_join(stim_lookup, by = c("sm_i" = "sm", "nv_i" = "nv", "rng_i" = "rng")) %>%
+  rename(stim_id_i = stim_id) %>%
+  left_join(stim_lookup, by = c("sm_j" = "sm", "nv_j" = "nv", "rng_j" = "rng")) %>%
+  rename(stim_id_j = stim_id) %>%
+  mutate(
+    low  = pmin(stim_id_i, stim_id_j),
+    high = pmax(stim_id_i, stim_id_j)
+  )
+
+D_subj <- pairs_id %>%
+  # Mark chosen-nonchosen relations (analogous to co_group for similarity)
+  mutate(chosen_nc = (is_chosen_i == 1 & is_chosen_j == 0) | 
+                    (is_chosen_j == 1 & is_chosen_i == 0)) %>%
+  group_by(subj_id, low, high) %>%
+  summarise(
+    n_appear    = n(),           # Total appearances (denominator)
+    n_chosen_nc = sum(chosen_nc), # # chosen-nonchosen (numerator, analog n_win)
+    D           = n_chosen_nc / n_appear,  # P(chosen-non | co-occur)
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(D))
+
+
+```
+
+```{r}
+# Step 3: Average across subjects
+D_avg <- D_subj %>%
+  group_by(low, high) %>%
+  summarise(
+    D_mean = mean(D, na.rm = TRUE),
+    D_sd   = sd(D, na.rm = TRUE),
+    D_se   = D_sd / sqrt(n()),
+    n_subj = n(),
+    .groups = "drop"
+  )
+# Output: Group-level dissimilarities with stats.
+
+# Step 4: Build symmetric RDM matrix
+n_stim <- nrow(stim_lookup)  # 27
+D_mat <- matrix(NA_real_, nrow = n_stim, ncol = n_stim)  # NA for unseen pairs
+rownames(D_mat) <- colnames(D_mat) <- stim_lookup$stim_id
+
+# Fill off-diagonals (loop matches your old exact style)
+for (k in seq_len(nrow(D_avg))) {
+  i <- D_avg$low[k]
+  j <- D_avg$high[k]
+  D_mat[i, j] <- D_avg$D_mean[k]
+  D_mat[j, i] <- D_avg$D_mean[k]
+}
+
+diag(D_mat) <- 0  # Explicit (overwrites any diag NAs)
+
+```
+
+```{r}
+matrix_to_long <- function(M) {
+  as_tibble(M, .name_repair = "minimal") %>%
+    mutate(id_i = row_number()) %>%
+    pivot_longer(-id_i, names_to = "id_j", values_to = "val") %>%
+    mutate(
+      id_i = as.integer(id_i),
+      id_j = as.integer(id_j)
+    )
+}
+
+plot_long <- bind_rows(
+  matrix_to_long(D_mat) %>% mutate(metric = "Dissimilarity")
+)
+
+sm_blocks <- tibble(
+  sm  = 0:2,
+  start = c(1, 10, 19),
+  end   = c(9, 18, 27),
+  mid   = c(5, 14, 23),
+  label = paste0("sm", 0:2)
+)
+
+nv_blocks <- tidyr::expand_grid(
+  sm = 0:2,
+  nv   = 1:3
+) %>%
+  mutate(
+    start = sm*9 + (nv-1)*3 + 1,
+    end   = start + 2,
+    mid   = (start + end)/2,
+    nv    = paste0("n", nv)
+  )
+
+plot_matrix <- function(
+  M, stim_lookup,
+  value_name = "Similarity",
+  title = "",
+  limits = c(0,1),
+  palette = "plasma",
+  na_value = "grey90",
+  legend_title_size = 9,
+  show_sm_labels = TRUE,
+  show_nv_labels   = TRUE,
+  show_rng_right   = TRUE,
+  base_size = 14
+) {
+
+  stopifnot(is.matrix(M))
+  stopifnot(all(c("sm","nv","rng","stim_id") %in% names(stim_lookup)))
+
+  stim_order <- stim_lookup %>% arrange(sm, nv, rng) %>% pull(stim_id)
+  N <- length(stim_order)
+
+  M_long <- matrix_to_long(M) %>%
+    mutate(
+      id_i = factor(id_i, levels = stim_order),
+      id_j = factor(id_j, levels = stim_order)
+    )
+
+  rng_right <- stim_lookup %>%
+    arrange(sm, nv, rng) %>%
+    transmute(y = stim_id, label = paste0("r", rng))
+
+  p <- ggplot(M_long, aes(id_i, id_j, fill = val)) +
+    geom_tile() +
+    scale_fill_viridis_c(
+      option = palette,
+      direction = -1,
+      limits = limits,
+      name = value_name,
+      na.value = na_value
+    ) +
+    coord_equal(clip = "off", xlim = c(.5, N+.5), ylim = c(.5, N+.5)) +
+    theme_minimal(base_size = base_size) +
+    theme(
+      panel.grid = element_blank(),
+      axis.text  = element_blank(),
+      axis.ticks = element_blank(),
+      legend.title = element_text(size = legend_title_size),
+      plot.margin = margin(20, 130, 70, 90)
+    ) +
+    labs(x = NULL, y = NULL, title = title)
+
+  sm_cuts <- seq(9.5, 18.5, by = 9)
+  nv_cuts   <- sort(c(sm_cuts - 6, sm_cuts - 3, sm_cuts + 3, sm_cuts + 6))
+  rng_cuts  <- setdiff(seq(1.5, 26.5, by = 1), c(sm_cuts, nv_cuts))
+
+  add_lines <- function(p, xs, lw, a = 1)
+    Reduce(`+`, lapply(xs, \(x)
+      list(
+        geom_vline(xintercept = x, linewidth = lw, alpha = a),
+        geom_hline(yintercept = x, linewidth = lw, alpha = a)
+      )
+    ), init = p)
+
+  p <- p |>
+    add_lines(sm_cuts, 0.9) |>
+    add_lines(nv_cuts,   0.45, 0.9) |>
+    add_lines(rng_cuts,  0.22, 0.55)
+
+  if (show_rng_right)
+    p <- p + geom_text(data = rng_right,
+                       aes(x = N + 1.2, y = y, label = label),
+                       inherit.aes = FALSE,
+                       hjust = 0, size = 3)
+  if (show_sm_labels)
+  p <- p + geom_text(
+    data = sm_blocks,
+    aes(x = mid, y = 0, label = label),
+    inherit.aes = FALSE,
+    vjust = 1.6,
+    size = 3
+  )
+  
+  if (show_nv_labels)
+  p <- p + geom_text(
+    data = nv_blocks,
+    aes(x = 0, y = mid, label = nv),
+    inherit.aes = FALSE,
+    hjust = 1.4,
+    size = 3,
+  )
+
+
+  p
+}
+
+```
+
+
+```{r}
+p_D <- plot_matrix(
+  D_mat, stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Behavioral RDM (Avg D)",
+)
+
+```
+
+
+```{r}
+# Ideal Matrices 
+n_items <- nrow(stim_lookup)
+stim_order <- stim_lookup %>%
+  arrange(sm, nv, rng) %>%
+  mutate(idx = row_number()) %>%
+  pull(idx)
+N <- length(stim_order)
+
+neq_mat <- function(x) outer(x, x, "!=") * 1
+
+ideal_sm <- neq_mat(stim_lookup$sm)
+ideal_nv   <- neq_mat(stim_lookup$nv)
+ideal_rng  <- neq_mat(stim_lookup$rng)
+ideal_add  <- ideal_sm + ideal_nv + ideal_rng
+ideal_add01 <- ideal_add / 3
+
+ideal_sm[D_mat %>% is.na()] <- NA
+ideal_nv[D_mat %>% is.na()]   <- NA
+ideal_rng[D_mat %>% is.na()]  <- NA
+ideal_add01[D_mat %>% is.na()] <- NA
+
+ensure_dimnames <- function(M) {
+  colnames(M) <- seq_len(ncol(M))
+  rownames(M) <- seq_len(nrow(M))
+  M
+}
+D_mat          <- ensure_dimnames(D_mat)
+ideal_sm    <- ensure_dimnames(ideal_sm)
+ideal_nv      <- ensure_dimnames(ideal_nv)
+ideal_rng     <- ensure_dimnames(ideal_rng)
+ideal_add01   <- ensure_dimnames(ideal_add01)
+
+
+```
+
+```{r}
+p_emp <- plot_matrix(
+  D_mat,
+  stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Empirical D (Group average)",
+  legend_title_size = 9
+)
+
+p_sm <- plot_matrix(
+  ideal_sm,
+  stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Ideal D (Smoothness)",
+  legend_title_size = 9
+)
+
+p_nv <- plot_matrix(
+  ideal_nv,
+  stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Ideal D (# of Vertices)",
+  legend_title_size = 9
+)
+
+p_rng <- plot_matrix(
+  ideal_rng,
+  stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Ideal D (Range)",
+  legend_title_size = 9
+)
+
+p_add <- plot_matrix(
+  ideal_add01,
+  stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Ideal D (additive)",
+  legend_title_size = 9
+)
+
+
+p_emp
+p_sm
+p_nv
+p_rng
+p_add
+```
+
+```{r}
+# Correlation between ideal matrices and empirical matrix. 
+
+get_rdm_vec <- function(M) {
+  stopifnot(is.matrix(M))
+  M[upper.tri(M, diag = FALSE)]
+}
+
+rdm_cor_stats <- function(emp, model, method = "pearson", conf.level = 0.95) {
+  v_emp   <- get_rdm_vec(emp)
+  v_model <- get_rdm_vec(model)
+
+  ok <- !is.na(v_emp) & !is.na(v_model)
+
+  ct <- cor.test(
+    v_emp[ok],
+    v_model[ok],
+    method = method,
+    conf.level = conf.level
+  )
+
+  tibble(
+    estimate   = unname(ct$estimate),          # r or rho
+    statistic = unname(ct$statistic),          # t or S
+    df        = unname(ct$parameter),           # df (Pearson only)
+    p_value   = ct$p.value,
+    ci_low    = ct$conf.int[1],
+    ci_high   = ct$conf.int[2],
+    n         = sum(ok),
+    method    = method
+  )
+}
+
+
+rdm_results <- bind_rows(
+  sm = bind_rows(
+    rdm_cor_stats(D_mat, ideal_sm, "pearson"),
+    rdm_cor_stats(D_mat, ideal_sm, "spearman")
+  ),
+  nv = bind_rows(
+    rdm_cor_stats(D_mat, ideal_nv, "pearson"),
+    rdm_cor_stats(D_mat, ideal_nv, "spearman")
+  ),
+  rng = bind_rows(
+    rdm_cor_stats(D_mat, ideal_rng, "pearson"),
+    rdm_cor_stats(D_mat, ideal_rng, "spearman")
+  ),
+  additive = bind_rows(
+    rdm_cor_stats(D_mat, ideal_add01, "pearson"),
+    rdm_cor_stats(D_mat, ideal_add01, "spearman")
+  ),
+  .id = "model"
+)
+
+rdm_results
+
+
+```
+
+```{r}
+# Finding optimal weights for sm / nv / rng
+v_emp  <- get_rdm_vec(D_mat)
+v_sm <- get_rdm_vec(ideal_sm)
+v_nv   <- get_rdm_vec(ideal_nv)
+v_rng  <- get_rdm_vec(ideal_rng)
+
+ok <- !is.na(v_emp)
+
+df_rsa <- tibble(
+  emp  = v_emp[ok],
+  sm = v_sm[ok],
+  nv   = v_nv[ok],
+  rng  = v_rng[ok]
+)
+
+# fit weighted model - lm
+fit <- lm(emp ~ sm + nv + rng, data = df_rsa)
+
+# Extract normalized weights
+w <- coef(fit)[c("sm", "nv", "rng")]
+
+weights_optimal <- w / sum(w)
+weights_optimal
+
+```
+
+```{r}
+# Build the best-fitting ideal RDM
+ideal_weighted <- 
+  weights_optimal["sm"] * ideal_sm +
+  weights_optimal["nv"]   * ideal_nv +
+  weights_optimal["rng"]  * ideal_rng
+ideal_weightedOptimal <- ideal_weighted / max(ideal_weighted, na.rm = TRUE)
+
+p_weighted <- plot_matrix(
+  ideal_weightedOptimal,
+  stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Ideal D (weighted_optimal)",
+  legend_title_size = 9
+)
+p_weighted
+
+# Extract normalized weights from mnl
+ideal_weighted_mnl <- 
+  weights_mnl["sm_dev_s"] * ideal_sm +
+  weights_mnl["nv_dev_s"]   * ideal_nv +
+  weights_mnl["rng_dev_s"]  * ideal_rng
+
+# normalize to [0,1]
+ideal_weighted_mnl <- ideal_weighted_mnl / max(ideal_weighted_mnl, na.rm = TRUE)
+
+p_weighted_mnl <- plot_matrix(
+  ideal_weighted_mnl,
+  stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Ideal D (weighted_mnl)",
+  legend_title_size = 9
+)
+p_weighted_mnl
+
+p_emp 
+
+
+rdm_compare <- bind_rows(
+   weight_equal = bind_rows(
+     rdm_cor_stats(D_mat, ideal_add01, "pearson"),
+   ),
+   weight_norm = bind_rows(
+     rdm_cor_stats(D_mat, ideal_weightedOptimal, "pearson"),
+   ),
+   weight_mnl = bind_rows(
+     rdm_cor_stats(D_mat, ideal_weighted_mnl, "pearson"),
+   ),.id = "model"
+  )
+
+rdm_compare
+
+
+cat(sprintf("\nweights_optimal: sm = %.3f, nv = %.3f, rng = %.3f",
+        weights_optimal["sm"],
+        weights_optimal["nv"],
+        weights_optimal["rng"]))
+
+cat(sprintf("\nweights_mnl: sm = %.3f, nv = %.3f, rng = %.3f",
+        weights_mnl["sm_dev_s"],
+        weights_mnl["nv_dev_s"],
+        weights_mnl["rng_dev_s"]))
+
+df_compare <- data.frame(
+  Model = factor(rep(c("Optimal", "MNL"), each = 3), levels = c("Optimal", "MNL")),
+  Feature = factor(rep(c("Smoothness", "NV", "Range"), 2), 
+                   levels = c("Smoothness", "NV", "Range")),
+  Weight = c(
+    # Optimal Weights
+    weights_optimal["sm"], 
+    weights_optimal["nv"], 
+    weights_optimal["rng"],
+    
+    # MNL Weights
+    weights_mnl["sm_dev_s"], 
+    weights_mnl["nv_dev_s"], 
+    weights_mnl["rng_dev_s"]
+  )
+)
+
+# 2. Plot
+ggplot(df_compare, aes(x = Model, y = Weight, fill = Feature)) +
+  # Bar plot with dodge (side-by-side)
+  geom_col(position = "dodge", width = 0.7, color = "black") + 
+  
+  # Classic theme
+  theme_classic(base_size = 14) +
+  # Labels
+  labs(
+    title = "Comparison of Feature Weights",
+    x = NULL,
+    y = "Normalized Weight",
+    fill = "Feature"
+  ) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, max(df_compare$Weight) * 1.1))
+#“Although relative feature weights derived from a mixed logit model capture decision-relevant utility, they explained #less variance in the empirical dissimilarity matrix than weights obtained by directly fitting the RDM. This likely #reflects the fact that choice models optimize decision likelihood in latent utility space, whereas representational #similarity analysis assumes a linear metric structure in perceptual space.”
+```
+
+```{r}
+# -------------------------
+# K-means clustering of participants
+# -------------------------
+
+# Compute participant-specific RDMs
+n_items <- 27
+
+participant_rdms <- D_subj %>%
+  group_by(subj_id) %>%
+  summarise(
+    RDM = list({
+      # Initialize dissimilarity matrix (matches your D_mat style)
+      D_mat <- matrix(NA_real_, nrow = n_items, ncol = n_items)
+      rownames(D_mat) <- colnames(D_mat) <- as.character(1:n_items)
+      
+      # Fill D matrix with subject-specific ratios
+      for (k in seq_len(n())) {
+        i <- low[k]
+        j <- high[k]
+        D_mat[i, j] <- D[k]  # <-- D from D_subj (~2 for observed)
+        D_mat[j, i] <- D[k]
+      }
+      diag(D_mat) <- 0
+      D_mat  
+    }),
+    .groups = "drop"
+  )
+
+# We only use the upper triangle (off-diagonal) to avoid redundancy
+get_upper_vec <- function(mat) mat[upper.tri(mat)]
+participant_rdms_vec <- participant_rdms %>%
+  mutate(RDM_vec = map(RDM, get_upper_vec))
+
+subj_ids <- participant_rdms$subj_id
+n_subj <- length(subj_ids)
+```
+
+
+```{r}
+# -------------------------
+# 1. Prepare data & distances
+# -------------------------
+complete_pairs <- do.call(rbind, participant_rdms_vec$RDM_vec)
+complete_pairs <- complete_pairs[, apply(complete_pairs, 2, function(x) all(!is.na(x)))]
+# complete_pairs <- do.call(rbind, lapply(participant_rdms_vec$RDM_vec, 
+#                                         function(v) replace(v, is.na(v), 0)))
+
+pp_coords <- complete_pairs  
+pp_dist <- dist(pp_coords)   
+
+cat("Data:", nrow(pp_coords), "subjects x", ncol(pp_coords), "pairs\n")
+
+# -------------------------
+# 2. ELBOW plot (your exact style)
+# -------------------------
+max_k <- 8
+wss <- numeric(max_k)
+
+for (k in 1:max_k) {
+  km <- kmeans(pp_coords, centers = k, nstart = 50)
+  wss[k] <- km$tot.withinss
+}
+
+plot(1:max_k, wss, type = "b", pch = 19,
+     xlab = "Number of clusters (k)",
+     ylab = "Total within-cluster SS",
+     main = "Elbow Method for Optimal k")
+
+# -------------------------
+# 3. SILHOUETTE plot (your exact style)
+# -------------------------
+sil_width <- rep(NA_real_, max_k)
+
+for (k in 2:max_k) {
+  km <- kmeans(pp_coords, centers = k, nstart = 50)
+  sil <- silhouette(km$cluster, pp_dist)
+  sil_width[k] <- mean(sil[, "sil_width"])
+}
+
+plot(
+  2:max_k, sil_width[2:max_k],
+  type = "b", pch = 19,
+  xlab = "Number of clusters (k)",
+  ylab = "Mean silhouette width",
+  main = "Silhouette Method for Optimal k"
+)
+
+abline(v = which.max(sil_width), lty = 2, col = "red")
+
+```
+```{r}
+# -------------------------
+# 4. Choose best k & fit final clustering
+# -------------------------
+k_opt <- 2
+km_final <- kmeans(pp_coords, centers = k_opt, nstart = 100)
+
+# Reorder cluster labels so largest = 1
+cluster_sizes <- table(km_final$cluster)
+cluster_order <- as.numeric(names(sort(cluster_sizes, decreasing = TRUE)))
+new_labels <- match(km_final$cluster, cluster_order)
+
+participant_clusters <- tibble(
+  subj_id = subj_ids,
+  cluster = factor(new_labels)
+)
+
+print(table(participant_clusters$cluster))
+
+# Cluster summary
+cluster_rdms <- participant_clusters %>%
+  left_join(participant_rdms, by = "subj_id") %>%  # Has RDM list column
+  group_by(cluster) %>%
+  summarise(
+    mean_RDM = list(reduce(RDM, `+`) / n()),  # Element-wise avg of subj matrices
+    n_subj = n(),
+    .groups = "drop"
+  )
+
+cluster_plots_D <- cluster_rdms %>%
+  mutate(
+    plot = purrr::map2(
+      mean_RDM,
+      cluster,
+      ~ plot_matrix(
+        M = .x,                    # Dissimilarity matrix
+        stim_lookup = stim_lookup,
+        value_name = "Dissimilarity",
+        limits = c(0, max(unlist(mean_RDM), na.rm = TRUE)),  # Dynamic range
+        palette = "plasma",
+        title = paste0("Cluster ", .y, " (n=", n_subj[as.integer(.y)], ")")
+      )
+    )
+  )
+
+# View plots
+cluster_plots_D$plot[[1]]  # Cluster 1
+cluster_plots_D$plot[[2]]  # Cluster 2 (if k_opt=2)
+```
+
+```{r}
+# Mean Spearman correlation between a cluster’s participant RDMs and a feature model RDM
+
+make_feature_rdm <- function(feature) {
+  v <- stim_lookup[[feature]]
+  as.matrix(dist(v))
+}
+
+RDM_sm <- make_feature_rdm("sm")
+RDM_nv   <- make_feature_rdm("nv")
+RDM_rng  <- make_feature_rdm("rng")
+
+get_vec <- function(mat) mat[upper.tri(mat)]
+
+model_vecs <- tibble(
+  feature = c("sm", "nv", "rng"),
+  vec = list(
+    get_vec(RDM_sm),
+    get_vec(RDM_nv),
+    get_vec(RDM_rng)
+  )
+)
+
+
+participant_rsa_weights <- participant_rdms %>%
+  mutate(RDM_vec = map(RDM, ~ .x[upper.tri(.x)])) %>%
+  crossing(model_vecs) %>%
+  mutate(
+    rho = map2_dbl(
+      RDM_vec, vec,
+      ~ cor(.x, .y,
+            method = "spearman",
+            use = "pairwise.complete.obs")
+    )
+  ) %>%
+  select(subj_id, feature, rho)
+
+
+cluster_means_rsa <- participant_clusters %>%
+  left_join(participant_rsa_weights, by = "subj_id") %>%
+  group_by(cluster, feature) %>%
+  summarise(
+    mean_rho = mean(rho, na.rm = TRUE),
+    se_rho   = sd(rho, na.rm = TRUE) / sqrt(n()),
+    n_subjects = n(),
+    .groups = "drop"
+  )
+
+cluster_means_rsa
+
+pd <- position_dodge(width = 0.7)
+
+cluster_means_rsa %>%
+  mutate(feature = factor(feature, levels = c("sm", "nv", "rng"))) %>%
+  ggplot(aes(x = cluster, y = mean_rho, fill = feature)) +
+  geom_col(position = pd, width = 0.7, color = "black") + 
+  geom_errorbar(
+    aes(ymin = mean_rho - se_rho,
+        ymax = mean_rho + se_rho),
+    position = pd,  # This forces them to align with the bars
+    width = 0.2
+  ) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Mean RSA Feature Weights per Cluster",
+    y = "Spearman correlation (RDM)",
+    fill = "Feature"
+  )
+
+# Positive rho → that feature structures representational similarity
+# Near-zero rho → feature not used
+# Negative rho → feature systematically anti-aligned with representations
+
+```
+
+```{r}
+model_mat <- cbind(sm = v_sm, nv = v_nv, rng = v_rng)
+# -------------------------
+#  Regression RSA per cluster (on mean RDM)
+# -------------------------
+
+cluster_weights <- cluster_rdms %>%
+  mutate(
+    # Vectorize each cluster’s mean RDM (dependent variable)
+    emp_vec = map(mean_RDM, get_rdm_vec),
+    
+    # Fit multiple regression: empirical dissimilarities ~ sm + nv + rng
+    fit = map(emp_vec, ~ {
+      # Align to complete cases across models and data
+      ok <- complete.cases(.x, model_mat)
+      y  <- .x[ok]
+      X  <- model_mat[ok, , drop = FALSE]
+      lm(y ~ sm + nv + rng, data = as.data.frame(X))
+    }),
+    
+    # Extract coefficients and SEs
+    coef_tbl = map(fit, ~ {
+      s <- summary(.x)
+      tibble(
+        feature = rownames(s$coefficients)[-1],  # drop intercept
+        beta    = s$coefficients[-1, "Estimate"],
+        se      = s$coefficients[-1, "Std. Error"],
+        t       = s$coefficients[-1, "t value"],
+        p       = s$coefficients[-1, "Pr(>|t|)"]
+      )
+    })
+  ) %>%
+  select(cluster, n_subj, coef_tbl) %>%
+  unnest(coef_tbl)
+
+cluster_weights
+
+cluster_weights %>%
+  mutate(feature = factor(feature, levels = c("sm", "nv", "rng"))) %>%
+  ggplot(aes(x = cluster, y = beta, fill = feature)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.7, color = "black") +
+  geom_errorbar(aes(ymin = beta - se, ymax = beta + se),
+                position = position_dodge(width = 0.7), width = 0.2) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Feature Weights from RDM Regression",
+    y = "Regression coefficient (beta)",
+    fill = "Feature",
+    x = NULL
+  )+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.45))
+```
+```{r}
+# raw RDM per subject →cluster RDMs → for each cluster, on the individual RDMs run lmer() with random effect for subject. Then display the cluster-level weights.
+
+library(lme4)
+library(broom.mixed)
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# build predictor table from stim IDs, for each pair
+pair_features <- expand_grid(
+  low = 1:27,
+  high = 1:27
+) %>%
+  filter(low < high) %>%
+  left_join(
+    stim_lookup %>%
+      rename(low = stim_id,
+             sm_low = sm, nv_low = nv, rng_low = rng),
+    by = "low"
+  ) %>%
+  left_join(
+    stim_lookup %>%
+      rename(high = stim_id,
+             sm_high = sm, nv_high = nv, rng_high = rng),
+    by = "high"
+  ) %>%
+  mutate(
+    sm  = as.numeric(sm_low  != sm_high),
+    nv  = as.numeric(nv_low  != nv_high),
+    rng = as.numeric(rng_low != rng_high)
+  ) %>%
+  select(low, high, sm, nv, rng)
+
+# add cluster labels to subject-level RDM data
+rsa_lmm_df <- D_subj %>%
+  left_join(participant_clusters, by = "subj_id") %>%
+  left_join(pair_features, by = c("low", "high")) %>%
+  filter(!is.na(cluster))
+
+# check
+rsa_lmm_df %>%
+  count(cluster, subj_id) %>%
+  summarise(
+    n_subjects = n_distinct(subj_id),
+    min_pairs = min(n),
+    max_pairs = max(n)
+  )
+
+# fit one mixed model per cluster, with random effect for subject
+cluster_lmm_results <- rsa_lmm_df %>%
+  group_by(cluster) %>%
+  nest() %>%
+  mutate(
+    fit = map(data, ~ lmer(
+      D ~ sm + nv + rng + (1 | subj_id),
+      data = .x,
+      REML = FALSE
+    )),
+    coef_tbl = map(fit, ~ broom.mixed::tidy(.x, effects = "fixed"))
+  ) %>%
+  select(cluster, fit, coef_tbl) %>%
+  unnest(coef_tbl) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    feature = recode(term,
+                     sm = "sm",
+                     nv = "nv",
+                     rng = "rng"),
+    se = std.error,
+    beta = estimate
+  )
+
+cluster_lmm_results
+
+# bar plot
+pd <- position_dodge(width = 0.7)
+
+cluster_lmm_results %>%
+  mutate(feature = factor(feature, levels = c("sm", "nv", "rng"))) %>%
+  ggplot(aes(x = cluster, y = beta, fill = feature)) +
+  geom_col(position = pd, width = 0.7, color = "black") +
+  geom_errorbar(
+    aes(ymin = beta - se, ymax = beta + se),
+    position = pd,
+    width = 0.2
+  ) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Cluster-level Feature Weights from Mixed-Effects RSA",
+    x = NULL,
+    y = "Fixed-effect coefficient",
+    fill = "Feature"
+  )
+```
+
+```{r}
+# -------------------------
+# Split-half consistency
+# -------------------------
+set.seed(4228)
+n_iter <- 1000
+split_half_corrs <- numeric(n_iter)
+split_half_corrs_corrected <- numeric(n_iter)
+
+for (iter in seq_len(n_iter)) {
+
+  # Split participants
+  half1 <- sample(subj_ids, n_subj %/% 2)
+  half2 <- setdiff(subj_ids, half1)
+
+  # --- Average RDM MATRICES ---
+  rdm_half1 <- participant_rdms %>%
+    filter(subj_id %in% half1) %>%
+    pull(RDM) %>%
+    reduce(`+`) / length(half1)
+
+  rdm_half2 <- participant_rdms %>%
+    filter(subj_id %in% half2) %>%
+    pull(RDM) %>%
+    reduce(`+`) / length(half2)
+
+  # --- Vectorize AFTER averaging ---
+  vec1 <- get_upper_vec(rdm_half1)
+  vec2 <- get_upper_vec(rdm_half2)
+
+  # --- Correlation ---
+  r_half <- cor(vec1, vec2, method = "spearman", use = "pairwise.complete.obs")
+
+  split_half_corrs[iter] <- r_half
+  split_half_corrs_corrected[iter] <- (2 * r_half) / (1 + r_half)
+}
+
+cat("Split-half correlation (mean):", mean(split_half_corrs, na.rm = TRUE), "\n")
+cat("Spearman-Brown corrected:", mean(split_half_corrs_corrected, na.rm = TRUE), "\n")
+
+```
+
+
+
+
+##### Multidimensional scaling #####
+
+```{r}
+set.seed(4228)
+# Build weight matrix and delta matrix
+# weight matrix: 1 = observed, 0 = missing
+W <- ifelse(is.na(D_mat), 0, 1)
+
+# replace NA with 0
+D_smacof <- D_mat
+D_smacof[is.na(D_smacof)] <- 0
+
+# Safety: enforce zero diagonal
+diag(D_smacof) <- 0
+diag(W) <- 0
+```
+
+```{r}
+## Compute stress for multiple dimensionalities
+# stress is a lack-of-fit measure between:
+# The observed dissimilarities and the distances in the low-dimensional space (e.g., 2D)
+# “How much information about the dissimilarity structure is lost when I force it into 2 dimensions?”
+# If stress is low, then the 2D configuration preserves the rank order of your empirical dissimilarities well.
+# If stress is high, 2D is insufficient → try 3D, 4D, etc.
+# Stress < 0.05 → excellent fit
+# 0.05–0.10 → good
+# 0.10–0.20 → fair
+# 0.20 → poor
+
+# Try dimensions 1 to 8
+dims <- 1:8
+
+stress_tbl <- map_dfr(dims, function(k) {
+  fit <- smacof::mds(
+    delta = D_smacof,
+    weightmat = W,
+    type = "ordinal",
+    ndim = k
+  )
+  
+  tibble(
+    ndim = k,
+    stress = fit$stress
+  )
+})
+
+stress_tbl
+
+# plot the curve
+ggplot(stress_tbl, aes(x = ndim, y = stress)) +
+  geom_point(size = 3) +
+  geom_line() +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Number of dimensions",
+    y = "Stress",
+    title = "Stress vs. dimensionality (ordinal SMACOF)"
+  )
+
+```
+
+
+
+
+
+
+
+```{r}
+# Run Ordinal MDS (3D)
+mds_ordinal_3d <- smacof::mds(
+  delta     = D_smacof,
+  weightmat = W,
+  type      = "ordinal",
+  ndim      = 3
+)
+
+# Run Ordinal MDS (4D)
+mds_ordinal_4d <- smacof::mds(
+  delta     = D_smacof,
+  weightmat = W,
+  type      = "ordinal",
+  ndim      = 4
+)
+
+# Inspect stress
+mds_ordinal_3d$stress
+mds_ordinal_4d$stress
+
+```
+
+```{r}
+# extract coordinates, join data about stimulus
+extract_mds_coords <- function(mds_fit, stim_lookup) {
+  as.data.frame(mds_fit$conf) %>%
+    rownames_to_column("stim_id") %>%
+    mutate(stim_id = as.integer(stim_id)) %>%
+    rename_with(~ paste0("D", seq_along(.)), -stim_id) %>%
+    left_join(stim_lookup, by = "stim_id")
+}
+
+mds_coords_3d <- extract_mds_coords(mds_ordinal_3d, stim_lookup)
+mds_coords_4d <- extract_mds_coords(mds_ordinal_4d, stim_lookup)
+
+```
+
+```{r}
+# 3D projections
+mds_coords_3d <- mds_coords_3d %>%
+  mutate(
+    hover_txt = paste0(
+      "ID: ", stim_id, "<br>",
+      "sm = ", sm, "<br>",
+      "rng = ", rng, "<br>",
+      "nv = ", nv
+    )
+  )
+
+base_3d <- function(color_var, color_name) {
+  plot_ly(data = mds_coords_3d) %>%
+  add_markers(
+    x = ~D1, y = ~D2, z = ~D3,
+    marker = list(size = 5),
+    color = color_var,
+    hoverinfo = "text",
+    hovertext = ~hover_txt
+  ) 
+}
+
+
+# colored by curvature
+base_3d(~sm, "sm")
+
+# colored by range
+base_3d(~rng, "rng")
+
+# colored by nv
+base_3d(~nv, "nv")
+
+```
+
+
+```{r}
+library(ggimage)
+
+mds_coords_3d <- mds_coords_3d %>%
+  mutate(
+    nv_str  = paste0("N", nv),
+    rng_str = paste0("rng", rng),
+    s_str   = paste0("curv", sm),
+    img_file = paste0("circle_", rng_str, "_", nv_str, "_", s_str, "_seed7.png"),
+    img_path = file.path("../figures2/images", img_file)
+  )
+
+# plotting function
+plot_mds_projection_img <- function(df, d1, d2, title = "") {
+  ggplot(df, aes(x = .data[[d1]], y = .data[[d2]])) +
+    geom_image(aes(image = img_path), size = 0.07) +  # tune size
+    theme_classic(base_size = 14) +
+    labs(x = d1, y = d2, title = title)
+}
+
+plot_mds_projection_img(
+  mds_coords_3d, "D1", "D2",
+  "Ordinal MDS 3D: D1 vs D2"
+)
+
+plot_mds_projection_img(
+  mds_coords_3d, "D1", "D3",
+  "Ordinal MDS 3D: D1 vs D3"
+)
+
+plot_mds_projection_img(
+  mds_coords_3d, "D2", "D3",
+  "Ordinal MDS 3D: D2 vs D3"
+)
+
+
+```
+
+
+
+```{r}
+library(kableExtra)
+# Correlate MDS dimensions with stimulus features 
+# Is this feature aligned with a particular axis?
+cor_mds_features <- function(df, ndim) {
+  dim_cols <- paste0("D", 1:ndim)
+
+  df %>%
+    select(all_of(dim_cols), sm, nv, rng) %>%
+    mutate(across(c(sm, nv, rng), as.numeric)) %>%
+    cor(use = "complete.obs")
+}
+
+# 3D correlations
+full_cor_matrix_3d <- cor_mds_features(mds_coords_3d, ndim = 3)
+mds_dims <- paste0("D", 1:3)
+features <- c("sm", "nv", "rng")
+target_cor <- full_cor_matrix_3d[mds_dims, features]
+
+target_cor %>%
+  as.data.frame() %>%
+  round(3) %>% # Standard academic precision
+  kable(
+    col.names = c("Smoothness", "NV", "Range"),
+    align = "c",
+    booktabs = TRUE, # Professional 'booktabs' style (no vertical lines)
+    format = "html"  # Use "latex" if knitting to PDF
+  ) %>%
+  kable_styling(
+    full_width = FALSE, 
+    position = "left",
+    bootstrap_options = c("striped", "hover"),
+    font_size = 20
+  ) %>%
+  add_header_above(c(" " = 1, "Stimulus Features" = 3))
+
+# 4D correlations
+full_cor_matrix_4d <- cor_mds_features(mds_coords_4d, ndim = 4)
+mds_dims <- paste0("D", 1:4)
+features <- c("sm", "nv", "rng")
+target_cor <- full_cor_matrix_4d[mds_dims, features]
+
+target_cor %>%
+  as.data.frame() %>%
+  round(3) %>% # Standard academic precision
+  kable(
+    col.names = c("Smoothness", "NV", "Range"),
+    align = "c",
+    booktabs = TRUE, # Professional 'booktabs' style (no vertical lines)
+    format = "html"  # Use "latex" if knitting to PDF
+  ) %>%
+  kable_styling(
+    full_width = FALSE, 
+    position = "left",
+    bootstrap_options = c("striped", "hover"),
+    font_size = 20
+  ) %>%
+  add_header_above(c(" " = 1, "Stimulus Features" = 3))
+
+# the sign is arbitrary
+
+```
+
+```{r}
+# Vector fitting / projection: Project each feature as a vector through the space that maximally correlates with point positions.
+
+coords_3d <- mds_coords_3d %>%
+  select(starts_with("D"))
+
+features <- mds_coords_3d %>%
+  select(sm, nv, rng)
+
+envfit_3d <- envfit(coords_3d, features, permutations = 999, choices = 1:3)
+
+envfit_3d
+
+coords_4d <- mds_coords_4d %>%
+  select(starts_with("D"))
+
+features <- mds_coords_4d %>%
+  select(sm, nv, rng)
+
+envfit_4d <- envfit(coords_4d, features, permutations = 999, choices = 1:4)
+
+envfit_4d
+
+# D1, D2, D3: coordinates of the fitted feature vector
+#nv: mostly aligned with negative D2
+
+#r2: strength of feature representation (proportion of variance in the feature explained by projection onto the entire MDS configuration)
+
+# pr(>r): The probability that a random permutation of the feature values would produce an r² as large or larger than the observed one 
+
+# Extract r2 values from envfit results
+r2_data <- data.frame(
+  feature = names(envfit_3d$vectors$r),
+  r2      = envfit_3d$vectors$r,      # already r²
+  pval    = envfit_3d$vectors$pvals
+) %>%
+  mutate(
+    feature = factor(feature, levels = c("sm", "nv", "rng")),
+    label   = sprintf("p=%.3f", pval)
+  )
+
+
+ggplot(r2_data, aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.6, color = "black") + 
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Vector Fit Strength",
+    x = NULL, y = "r²", fill = "Feature"
+  ) +
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = function(lim) c(0, max(lim) * 1.2)) +
+  theme(legend.position = "none")
+
+```
+
+
+# MDS on Clusters 
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(smacof)
+
+# =========================
+# Helper: run SMACOF safely on one RDM
+# =========================
+run_mds_for_stress <- function(D_cluster, ndim, type = "ordinal") {
+  
+  # weight matrix: 1 = observed, 0 = missing
+  Wc <- ifelse(is.na(D_cluster), 0, 1)
+  
+  # replace NA with 0 for smacof input
+  Dc <- D_cluster
+  Dc[is.na(Dc)] <- 0
+  
+  # safety
+  diag(Dc) <- 0
+  diag(Wc) <- 0
+  
+  smacof::mds(
+    delta     = Dc,
+    weightmat = Wc,
+    type      = type,
+    ndim      = ndim
+  )
+}
+
+# =========================
+# Choose dimensionality range
+# =========================
+dims <- 1:8
+
+# =========================
+# Compute stress curve per cluster
+# cluster_rdms must contain:
+#   cluster
+#   mean_RDM   (list-column with cluster mean dissimilarity matrices)
+#   n_subj
+# =========================
+cluster_stress_tbl <- cluster_rdms %>%
+  select(cluster, n_subj, mean_RDM) %>%
+  mutate(
+    stress_results = map(mean_RDM, function(Dc) {
+      map_dfr(dims, function(k) {
+        fit <- run_mds_for_stress(Dc, ndim = k, type = "ordinal")
+        
+        tibble(
+          ndim   = k,
+          stress = fit$stress,
+          fit    = list(fit)
+        )
+      })
+    })
+  ) %>%
+  select(-mean_RDM) %>%
+  unnest(stress_results)
+
+cluster_stress_tbl
+
+
+ggplot(cluster_stress_tbl, aes(x = ndim, y = stress)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ cluster, nrow = 1) +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Number of dimensions",
+    y = "Stress",
+    title = "Stress vs. dimensionality for each cluster"
+  )
+
+
+
+library(patchwork)
+# shared y-axis range
+ylim_max <- max(cluster_stress_tbl$stress, na.rm = TRUE)
+
+stress_theme <- theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    panel.grid.minor = element_blank())
+
+p1 <- cluster_stress_tbl %>%
+  filter(cluster == 1) %>%
+  ggplot(aes(x = ndim, y = stress)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = 0.1, linetype = "dashed", color = "red", alpha = 0.4) +
+  scale_x_continuous(breaks = 1:8) +
+  coord_cartesian(ylim = c(0, ylim_max)) +
+  labs(
+    title = "1",
+    x = "Number of dimensions",
+    y = "Stress"
+  ) +
+  stress_theme
+
+p2 <- cluster_stress_tbl %>%
+  filter(cluster == 2) %>%
+  ggplot(aes(x = ndim, y = stress)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = 0.1, linetype = "dashed", color = "red", alpha = 0.4) +
+  scale_x_continuous(breaks = 1:8) +
+  coord_cartesian(ylim = c(0, ylim_max)) +
+  labs(
+    title = "2",
+    x = "Number of dimensions",
+    y = "Stress"
+  ) +
+  stress_theme
+
+combined_plot <- p1 + p2 +
+  plot_annotation(
+    title = "Stress vs. dimensionality for each cluster",
+    theme = theme(
+      plot.title = element_text(size = 20, face = "bold", hjust = 0.5)
+    )
+  )
+
+combined_plot
+
+
+cluster_stress_summary <- cluster_stress_tbl %>%
+  select(cluster, n_subj, ndim, stress) %>%
+  arrange(cluster, ndim)
+
+cluster_stress_summary
+```
+# Run final MDS with 3D for Cluster 1 and 4D for Cluster 2
+```{r}
+run_cluster_mds <- function(D_cluster, ndim = 4, type = "ordinal") {
+  Wc <- ifelse(is.na(D_cluster), 0, 1)
+  Dc <- D_cluster
+  Dc[is.na(Dc)] <- 0
+  diag(Dc) <- 0
+  diag(Wc) <- 0
+
+  smacof::mds(
+    delta     = Dc,
+    weightmat = Wc,
+    type      = type,
+    ndim      = ndim
+  )
+}
+
+# specify target dimensionality per cluster
+dim_by_cluster <- c(`1` = 3, `2` = 4)
+
+cluster_mds <- cluster_rdms %>%
+  mutate(
+    ndim  = dim_by_cluster[as.character(cluster)],
+    mds   = map2(mean_RDM, ndim, ~ run_cluster_mds(.x, ndim = .y, type = "ordinal")),
+    stress = map_dbl(mds, ~ .x$stress)
+  )
+
+cluster_mds %>% select(cluster, n_subj, ndim, stress)
+```
+# Extract coordinates and join stimulus features
+```{r}
+cluster_coords <- cluster_mds %>%
+  transmute(
+    cluster, n_subj, ndim,
+    coords = map2(mds, ndim, ~ extract_mds_coords(.x, stim_lookup))
+  ) %>%
+  unnest(coords)
+
+cluster1_coords_3d <- cluster_coords %>% filter(cluster == 1)
+cluster2_coords_4d <- cluster_coords %>% filter(cluster == 2)
+
+```
+# Vector fitting
+```{r}
+library(dplyr)
+library(vegan)
+
+run_envfit <- function(df, dims, permutations = 999) {
+  # ensure no stray 'weights' column is passed
+  df <- df %>% select(-matches("^weights$"), everything())
+
+  dim_cols <- paste0("D", seq_len(dims))
+
+  coords <- df %>%
+    select(all_of(dim_cols)) %>%
+    as.data.frame()
+
+  feats <- df %>%
+    select(sm, nv, rng) %>%
+    mutate(across(everything(), as.numeric)) %>%
+    as.data.frame()
+
+  envfit(coords, feats, permutations = permutations, choices = seq_len(dims))
+}
+
+envfit_3d_cluster1 <- run_envfit(cluster1_coords_3d, dims = 3)
+envfit_4d_cluster2 <- run_envfit(cluster2_coords_4d, dims = 4)
+
+extract_envfit_r2 <- function(envfit_obj, cluster_id) {
+  data.frame(
+    cluster = cluster_id,
+    feature = names(envfit_obj$vectors$r),
+    r2      = envfit_obj$vectors$r,
+    pval    = envfit_obj$vectors$pvals
+  ) %>%
+    mutate(
+      feature = factor(feature, levels = c("sm","nv","rng"))
+    )
+}
+
+r2_cluster1 <- extract_envfit_r2(envfit_3d_cluster1, cluster_id = 1)
+r2_cluster2 <- extract_envfit_r2(envfit_4d_cluster2, cluster_id = 2)
+
+r2_all <- bind_rows(r2_cluster1, r2_cluster2)
+```
+
+```{r}
+r2_all <- r2_all %>%
+  mutate(sig = ifelse(pval < 0.05, "*", ""))
+
+# Cluster 1
+ggplot(filter(r2_all, cluster == 1),
+       aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.6, color = "black") +
+  geom_text(aes(label = sig, y = pmin(r2 + 0.02, 0.98)), size = 6) +
+  theme_classic(base_size = 14) +
+  labs(
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,1)) +
+  theme(legend.position = "none")
+
+# Cluster 2
+ggplot(filter(r2_all, cluster == 2),
+       aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.6, color = "black") +
+  geom_text(aes(label = sig, y = pmin(r2 + 0.02, 0.98)), size = 6) +
+  theme_classic(base_size = 14) +
+  labs(
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,1)) +
+  theme(legend.position = "none")
+```
+```{r}
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+
+extract_abs_loadings <- function(envfit_obj, cluster_id) {
+  arrows <- envfit_obj$vectors$arrows %>%
+    as.data.frame() %>%
+    rownames_to_column("feature")      # sm, nv, ang
+
+  arrows %>%
+    mutate(
+      cluster = cluster_id,
+      feature = factor(feature, levels = c("sm", "nv", "rng"))
+    ) %>%
+    pivot_longer(
+      cols = starts_with("D"),
+      names_to = "dimension",
+      values_to = "loading"
+    ) %>%
+    mutate(
+      loading = abs(loading)          # ignore sign
+    )
+}
+
+load_3d_c1 <- extract_abs_loadings(envfit_3d_cluster1, cluster_id = 1)
+load_4d_c2 <- extract_abs_loadings(envfit_4d_cluster2, cluster_id = 2)
+
+load_all <- bind_rows(load_3d_c1, load_4d_c2)
+
+```
+
+```{r}
+# Cluster 1 (3D):
+
+ggplot(filter(load_all, cluster == 1),
+       aes(x = dimension, y = loading, fill = feature)) +
+  geom_col(position = position_dodge(width = 0.6),
+           width = 0.6, color = "black") +
+  theme_classic(base_size = 13) +
+  labs(
+    x = NULL,
+    y = "|vector loading|"
+  ) +
+  scale_y_continuous(limits = c(0, 1.02), expand = c(0, 0)) +
+  theme(
+    legend.position = "none",   # or "right" if you want legend
+    plot.title = element_text(size = 14),
+    axis.title.y = element_text(size = 12),
+    axis.text = element_text(size = 11)
+  )
+
+```
+```{r}
+# Cluster 2 (4D):
+
+ggplot(filter(load_all, cluster == 2),
+       aes(x = dimension, y = loading, fill = feature)) +
+  geom_col(position = position_dodge(width = 0.6),
+           width = 0.6, color = "black") +
+  theme_classic(base_size = 13) +
+  labs(
+    x = NULL,
+    y = "|vector loading|"
+  ) +
+  scale_y_continuous(limits = c(0, 1.02), expand = c(0, 0)) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 14),
+    axis.title.y = element_text(size = 12),
+    axis.text = element_text(size = 11)
+  )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+conflicts_prefer(plotly::layout)
+
+# =========================
+# MDS within RDM-based participant clusters
+# (run ordinal SMACOF separately on each cluster's mean RDM)
+# =========================
+
+run_cluster_mds <- function(D_cluster, ndim = 3, type = "ordinal") {
+
+  # weight matrix: 1 = observed, 0 = missing
+  Wc <- ifelse(is.na(D_cluster), 0, 1)
+
+  # replace NA with 0 for smacof input
+  Dc <- D_cluster
+  Dc[is.na(Dc)] <- 0
+
+  # safety
+  diag(Dc) <- 0
+  diag(Wc) <- 0
+
+  smacof::mds(
+    delta     = Dc,
+    weightmat = Wc,
+    type      = type,
+    ndim      = ndim
+  )
+}
+
+# 1) Compute mean RDM per cluster (you already made cluster_rdms above)
+# cluster_rdms has: cluster, mean_RDM (list), n_subj
+
+# 2) Run MDS for each cluster (3D and 4D)
+cluster_mds <- cluster_rdms %>%
+  mutate(
+    mds_3d = map(mean_RDM, ~ run_cluster_mds(.x, ndim = 3, type = "ordinal")),
+    mds_4d = map(mean_RDM, ~ run_cluster_mds(.x, ndim = 4, type = "ordinal")),
+    stress_3d = map_dbl(mds_3d, ~ .x$stress),
+    stress_4d = map_dbl(mds_4d, ~ .x$stress)
+  )
+
+cluster_mds %>% select(cluster, n_subj, stress_3d, stress_4d)
+
+# 3) Extract coordinates + join stimulus features (reuses your extract_mds_coords)
+cluster_coords_3d <- cluster_mds %>%
+  transmute(
+    cluster, n_subj,
+    coords = map(mds_3d, ~ extract_mds_coords(.x, stim_lookup))
+  ) %>%
+  unnest(coords)
+
+cluster_coords_4d <- cluster_mds %>%
+  transmute(
+    cluster, n_subj,
+    coords = map(mds_4d, ~ extract_mds_coords(.x, stim_lookup))
+  ) %>%
+  unnest(coords)
+
+# 4) Plot: 3D interactive (plotly) per cluster (colored by sm / nv / rng)
+plot_cluster_3d <- function(df, cluster_id, color_col = "sm") {
+  dfc <- df %>% filter(cluster == cluster_id)
+
+  plot_ly(data = dfc) %>%
+    add_markers(
+      x = ~D1, y = ~D2, z = ~D3,
+      marker = list(size = 5),
+      color = dfc[[color_col]],
+      name = "Points"
+    ) %>%
+    layout(
+      title = paste0("Cluster ", cluster_id, " (n=", unique(dfc$n_subj),
+                     "): 3D MDS colored by ", color_col)
+    )
+}
+# Example calls (cluster values are factors like "1","2")
+plot_cluster_3d(cluster_coords_3d, cluster_id = "1", color_col = "sm")
+plot_cluster_3d(cluster_coords_3d, cluster_id = "2", color_col = "sm")
+
+plot_cluster_3d(cluster_coords_3d, cluster_id = "1", color_col = "nv")
+plot_cluster_3d(cluster_coords_3d, cluster_id = "2", color_col = "nv")
+
+plot_cluster_3d(cluster_coords_3d, cluster_id = "1", color_col = "rng")
+plot_cluster_3d(cluster_coords_3d, cluster_id = "2", color_col = "rng")
+
+# 5) Plot: 4D projections (ggplot) per cluster (reuse your plot_mds_projection)
+plot_cluster_4d_projection <- function(df, cluster_id, d1, d2, color_by = NULL, title = "") {
+  dfc <- df %>% filter(cluster == cluster_id)
+  plot_mds_projection(
+    df = dfc,
+    d1 = d1, d2 = d2,
+    color_by = color_by,
+    title = paste0("Cluster ", cluster_id, " (n=", unique(dfc$n_subj), "): ", title)
+  )
+}
+```
+
+
+### 3D
+
+```{r}
+# =========================
+# MDS image-plots for the TWO RDM-based clusters
+# =========================
+
+library(ggimage)
+
+# --- add image paths to CLUSTER 3D coords ---
+cluster_coords_3d <- cluster_coords_3d %>%
+  mutate(
+    nv_str  = paste0("N", nv),
+    rng_str = paste0("rng", rng),
+    s_str   = paste0("curv", sm),
+    img_file = paste0("circle_", rng_str, "_", nv_str, "_", s_str, "_seed7.png"),
+    img_path = file.path("../figures2/images", img_file)
+  )
+
+# plotting function (same style as yours)
+plot_mds_projection_img <- function(df, d1, d2, title = "") {
+  ggplot(df, aes(x = .data[[d1]], y = .data[[d2]])) +
+    geom_image(aes(image = img_path), size = 0.11) + 
+    scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) + 
+    theme_classic(base_size = 16) +
+    labs(x = d1, y = d2, title = title)
+}
+
+# --- make the 3 projections PER CLUSTER ---
+clusters <- sort(unique(as.character(cluster_coords_3d$cluster)))
+
+for (cl in clusters) {
+  dfc <- cluster_coords_3d %>% filter(cluster == cl)
+
+  print(plot_mds_projection_img(
+    dfc, "D1", "D2",
+    paste0("Cluster ", cl, " — Ordinal MDS 3D: D1 vs D2")
+  ))
+
+  print(plot_mds_projection_img(
+    dfc, "D1", "D3",
+    paste0("Cluster ", cl, " — Ordinal MDS 3D: D1 vs D3")
+  ))
+
+  print(plot_mds_projection_img(
+    dfc, "D2", "D3",
+    paste0("Cluster ", cl, " — Ordinal MDS 3D: D2 vs D3")
+  ))
+}
+```
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(vegan)
+library(ggplot2)
+library(kableExtra)
+
+# =========================
+# Helpers (3D only)
+# =========================
+
+cor_mds_features <- function(df, ndim = 3) {
+  dim_cols <- paste0("D", 1:ndim)
+
+  df %>%
+    select(all_of(dim_cols), sm, nv, rng) %>%
+    mutate(across(c(sm, nv, rng), as.numeric)) %>%
+    cor(use = "complete.obs")
+}
+
+make_cor_kable <- function(target_cor, title = "Stimulus Features") {
+  target_cor %>%
+    as.data.frame() %>%
+    round(3) %>%
+    kable(
+      col.names = c("Smoothness", "NV", "Range"),
+      align = "c",
+      booktabs = TRUE,
+      format = "html"
+    ) %>%
+    kable_styling(
+      full_width = FALSE,
+      position = "left",
+      bootstrap_options = c("striped", "hover"),
+      font_size = 20
+    ) %>%
+    add_header_above(c(" " = 1, title = 3))
+}
+
+run_envfit_3d <- function(df, permutations = 999) {
+  coords <- df %>% select(D1, D2, D3)
+  feats  <- df %>% select(sm, nv, rng) %>% mutate(across(everything(), as.numeric))
+  envfit(coords, feats, permutations = permutations, choices = 1:3)
+}
+
+extract_envfit_r2 <- function(envfit_obj, cluster_id) {
+  data.frame(
+    cluster = cluster_id,
+    feature = names(envfit_obj$vectors$r),
+    r2      = envfit_obj$vectors$r,      # already r²
+    pval    = envfit_obj$vectors$pvals
+  ) %>%
+    mutate(
+      feature = factor(feature, levels = c("sm", "nv", "rng")),
+      label   = sprintf("p=%.3f", pval)
+    )
+}
+
+# =========================
+# 1) Per-cluster 3D correlations (D1–D3 vs sm/nv/rng)
+# =========================
+
+clusters <- sort(unique(as.character(cluster_coords_3d$cluster)))
+
+cor_tables_3d <- map(clusters, function(cl) {
+  dfc <- cluster_coords_3d %>% filter(cluster == cl)
+
+  full_cor <- cor_mds_features(dfc, ndim = 3)
+  mds_dims <- paste0("D", 1:3)
+  feats    <- c("sm", "nv", "rng")
+
+  target_cor <- full_cor[mds_dims, feats, drop = FALSE]
+
+  list(cluster = cl, target_cor = target_cor)
+})
+
+for (obj in cor_tables_3d) {
+  cat("\n\n")
+  print(
+    make_cor_kable(obj$target_cor, title = paste0("Cluster ", obj$cluster, " — Stimulus Features (3D)"))
+  )
+}
+
+# =========================
+# 2) Envfit per cluster (3D) + tidy r² table
+# =========================
+
+envfit_3d_by_cluster <- map(clusters, function(cl) {
+  dfc <- cluster_coords_3d %>% filter(cluster == cl)
+  run_envfit_3d(dfc, permutations = 999)
+})
+names(envfit_3d_by_cluster) <- clusters
+
+r2_3d_all <- imap_dfr(envfit_3d_by_cluster, ~ extract_envfit_r2(.x, cluster_id = .y))
+
+# inspect table
+r2_3d_all
+
+# =========================
+# 3) Plot r² bars per cluster (3D)
+# =========================
+r2_3d_all <- r2_3d_all %>%
+  mutate(sig = ifelse(pval < 0.05, "*", ""))
+
+ggplot(r2_3d_all, aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.6, color = "black") +
+  geom_text(aes(label = sig, y = pmin(r2 + 0.05, 0.98)), size = 6) +
+  facet_wrap(~ cluster, nrow = 1) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Vector Fit Strength by Cluster (3D MDS)",
+    x = NULL, y = expression(r^2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+  theme(legend.position = "none")
+
+# Optional: print raw envfit outputs (examples)
+# envfit_3d_by_cluster[["1"]]
+# envfit_3d_by_cluster[["2"]]
+
+# note: sign is arbitrary (still true per-cluster)
+```
+```{r}
+
+# =========================
+# Envfit vector table helpers
+# =========================
+extract_envfit_table <- function(envfit_obj) {
+
+  # vector directions
+  arrows <- envfit_obj$vectors$arrows %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("feature")
+
+  # r² values
+  r2 <- envfit_obj$vectors$r
+
+  # keep features as rows, dimensions as columns
+  arrow_tbl <- arrows %>%
+    mutate(
+      feature = recode(feature,
+        sm  = "Smoothness",
+        nv  = "NV",
+        rng = "Range"
+      )
+    ) %>%
+    select(feature, D1, D2, D3)
+
+  # add r² as a column
+  arrow_tbl %>%
+    mutate(
+      R2 = c(r2["sm"], r2["nv"], r2["rng"])
+    ) %>%
+    mutate(
+      across(c(D1, D2, D3, R2), ~ signif(.x, 2))
+    )
+}
+
+make_envfit_kable <- function(df, title) {
+
+  df %>%
+    kable(
+      col.names = c("", "D1", "D2", "D3", "R²"),
+      align = c("l", "c", "c", "c", "c"),
+      booktabs = TRUE,
+      format = "html"
+    ) %>%
+    kable_styling(
+      full_width = FALSE,
+      position = "left",
+      bootstrap_options = c("striped", "hover"),
+      font_size = 20
+    ) %>%
+    add_header_above(c(" " = 1, title = 4))
+}
+
+envfit_tables <- imap(envfit_3d_by_cluster, function(env, cl) {
+
+  tbl <- extract_envfit_table(env)
+
+  list(
+    cluster = cl,
+    table = tbl
+  )
+})
+
+for (obj in envfit_tables) {
+
+  cat("\n\n")
+
+  print(
+    make_envfit_kable(
+      obj$table,
+      paste0("Cluster ", obj$cluster)
+    )
+  )
+}
+```
+
+
+### 4D
+
+
+
+```{r}
+# =========================
+# 4D image-plots for selected projections only
+# =========================
+
+cluster_coords_4d <- cluster_coords_4d %>%
+  mutate(
+    nv_str  = paste0("N", nv),
+    rng_str = paste0("rng", rng),
+    s_str   = paste0("curv", sm),
+    img_file = paste0("circle_", rng_str, "_", nv_str, "_", s_str, "_seed7.png"),
+    img_path = file.path("../figures2/images", img_file)
+  )
+
+plot_mds_projection_img <- function(df, d1, d2, title = "") {
+  ggplot(df, aes(x = .data[[d1]], y = .data[[d2]])) +
+    geom_image(aes(image = img_path), size = 0.11) +
+    scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +
+    theme_classic(base_size = 16) +
+    labs(x = d1, y = d2, title = title)
+}
+
+clusters <- sort(unique(as.character(cluster_coords_4d$cluster)))
+
+for (cl in clusters) {
+  dfc <- cluster_coords_4d %>% filter(cluster == cl)
+
+  print(plot_mds_projection_img(
+    dfc, "D1", "D2",
+    paste0("Cluster ", cl, " — Ordinal MDS 4D: D1 vs D2")
+  ))
+  
+  print(plot_mds_projection_img(
+    dfc, "D2", "D3",
+    paste0("Cluster ", cl, " — Ordinal MDS 4D: D2 vs D3")
+  ))
+
+  print(plot_mds_projection_img(
+    dfc, "D1", "D3",
+    paste0("Cluster ", cl, " — Ordinal MDS 4D: D1 vs D3")
+  ))
+  
+  print(plot_mds_projection_img(
+    dfc, "D1", "D4",
+    paste0("Cluster ", cl, " — Ordinal MDS 4D: D1 vs D4")
+  ))
+
+  print(plot_mds_projection_img(
+    dfc, "D2", "D4",
+    paste0("Cluster ", cl, " — Ordinal MDS 4D: D2 vs D4")
+  ))
+  
+  print(plot_mds_projection_img(
+    dfc, "D3", "D4",
+    paste0("Cluster ", cl, " — Ordinal MDS 4D: D3 vs D4")
+  ))
+}
+```
+
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(vegan)
+library(ggplot2)
+library(kableExtra)
+library(tibble)
+
+# =========================
+# Helpers (4D only)
+# =========================
+
+cor_mds_features_4d <- function(df, ndim = 4) {
+  dim_cols <- paste0("D", 1:ndim)
+
+  df %>%
+    select(all_of(dim_cols), sm, nv, rng) %>%
+    mutate(across(c(sm, nv, rng), as.numeric)) %>%
+    cor(use = "complete.obs")
+}
+
+make_cor_kable_4d <- function(target_cor, title = "Stimulus Features") {
+  target_cor %>%
+    as.data.frame() %>%
+    round(3) %>%
+    kable(
+      col.names = c("Smoothness", "NV", "Range"),
+      align = "c",
+      booktabs = TRUE,
+      format = "html"
+    ) %>%
+    kable_styling(
+      full_width = FALSE,
+      position = "left",
+      bootstrap_options = c("striped", "hover"),
+      font_size = 20
+    ) %>%
+    add_header_above(c(" " = 1, title = 3))
+}
+
+run_envfit_4d <- function(df, permutations = 999) {
+  coords <- df %>% select(D1, D2, D3, D4)
+  feats  <- df %>% select(sm, nv, rng) %>% mutate(across(everything(), as.numeric))
+  envfit(coords, feats, permutations = permutations, choices = 1:4)
+}
+
+extract_envfit_r2_4d <- function(envfit_obj, cluster_id) {
+  data.frame(
+    cluster = cluster_id,
+    feature = names(envfit_obj$vectors$r),
+    r2      = envfit_obj$vectors$r,   # already r²
+    pval    = envfit_obj$vectors$pvals
+  ) %>%
+    mutate(
+      feature = factor(feature, levels = c("sm", "nv", "rng")),
+      label   = sprintf("p=%.3f", pval)
+    )
+}
+
+# =========================
+# 1) Per-cluster 4D correlations (D1–D4 vs sm/nv/rng)
+# =========================
+
+clusters <- sort(unique(as.character(cluster_coords_4d$cluster)))
+
+cor_tables_4d <- map(clusters, function(cl) {
+  dfc <- cluster_coords_4d %>% filter(cluster == cl)
+
+  full_cor <- cor_mds_features_4d(dfc, ndim = 4)
+  mds_dims <- paste0("D", 1:4)
+  feats    <- c("sm", "nv", "rng")
+
+  target_cor <- full_cor[mds_dims, feats, drop = FALSE]
+
+  list(cluster = cl, target_cor = target_cor)
+})
+
+for (obj in cor_tables_4d) {
+  cat("\n\n")
+  print(
+    make_cor_kable_4d(
+      obj$target_cor,
+      title = paste0("Cluster ", obj$cluster, " — Stimulus Features (4D)")
+    )
+  )
+}
+
+# =========================
+# 2) Envfit per cluster (4D) + tidy r² table
+# =========================
+
+envfit_4d_by_cluster <- map(clusters, function(cl) {
+  dfc <- cluster_coords_4d %>% filter(cluster == cl)
+  run_envfit_4d(dfc, permutations = 999)
+})
+names(envfit_4d_by_cluster) <- clusters
+
+r2_4d_all <- imap_dfr(envfit_4d_by_cluster, ~ extract_envfit_r2_4d(.x, cluster_id = .y))
+
+# inspect table
+r2_4d_all
+
+# =========================
+# 3) Plot r² bars per cluster (4D)
+# =========================
+
+r2_4d_all <- r2_4d_all %>%
+  mutate(sig = ifelse(pval < 0.05, "*", ""))
+
+ggplot(r2_4d_all, aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.6, color = "black") +
+  geom_text(aes(label = sig, y = pmin(r2 + 0.05, 0.98)), size = 6) +
+  facet_wrap(~ cluster, nrow = 1) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Vector Fit Strength by Cluster (4D MDS)",
+    x = NULL, y = expression(r^2)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) +
+  theme(legend.position = "none")
+
+# Optional:
+# envfit_4d_by_cluster[["1"]]
+# envfit_4d_by_cluster[["2"]]
+
+# note: sign is arbitrary
+```
+
+```{r}
+# =========================
+# Envfit vector table helpers (4D)
+# =========================
+
+extract_envfit_table_4d <- function(envfit_obj) {
+
+  arrows <- envfit_obj$vectors$arrows %>%
+    as.data.frame() %>%
+    rownames_to_column("feature")
+
+  r2 <- envfit_obj$vectors$r
+
+  arrow_tbl <- arrows %>%
+    mutate(
+      feature = recode(feature,
+        sm  = "Smoothness",
+        nv  = "NV",
+        rng = "Range"
+      )
+    ) %>%
+    select(feature, D1, D2, D3, D4)
+
+  arrow_tbl %>%
+    mutate(
+      R2 = c(r2["sm"], r2["nv"], r2["rng"])
+    ) %>%
+    mutate(
+      across(c(D1, D2, D3, D4, R2), ~ signif(.x, 2))
+    )
+}
+
+make_envfit_kable_4d <- function(df, title) {
+  df %>%
+    kable(
+      col.names = c("", "D1", "D2", "D3", "D4", "R²"),
+      align = c("l", "c", "c", "c", "c", "c"),
+      booktabs = TRUE,
+      format = "html"
+    ) %>%
+    kable_styling(
+      full_width = FALSE,
+      position = "left",
+      bootstrap_options = c("striped", "hover"),
+      font_size = 20
+    ) %>%
+    add_header_above(c(" " = 1, title = 5))
+}
+
+envfit_tables_4d <- imap(envfit_4d_by_cluster, function(env, cl) {
+
+  tbl <- extract_envfit_table_4d(env)
+
+  list(
+    cluster = cl,
+    table = tbl
+  )
+})
+
+for (obj in envfit_tables_4d) {
+  cat("\n\n")
+
+  print(
+    make_envfit_kable_4d(
+      obj$table,
+      paste0("Cluster ", obj$cluster)
+    )
+  )
+}
+```
+
+```{r}
+# Cluster 1
+ggplot(filter(r2_3d_all, cluster == "1"),
+       aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.58, color = "black") +
+  geom_text(aes(label = sig, y = r2 + 0.03), size = 7) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Cluster 1, 3D MDS",
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.02),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "plain"),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 13)
+  )
+
+
+# Cluster 2
+ggplot(filter(r2_3d_all, cluster == "2"),
+       aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.58, color = "black") +
+  geom_text(aes(label = sig, y = r2 + 0.03), size = 7) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Cluster 2, 3D MDS",
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.02),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "plain"),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 13)
+  )
+
+
+# Cluster 1
+ggplot(filter(r2_4d_all, cluster == "1"),
+       aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.58, color = "black") +
+  geom_text(aes(label = sig, y = r2 + 0.03), size = 7) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Cluster 1, 4D MDS",
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.02),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "plain"),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 13)
+  )
+
+# Cluster 2
+ggplot(filter(r2_4d_all, cluster == "2"),
+       aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.58, color = "black") +
+  geom_text(aes(label = sig, y = r2 + 0.03), size = 7) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Cluster 2, 4D MDS",
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.02),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "plain"),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 13)
+  )
+```
+
+```{r}
+library(patchwork)
+
+# 3D MDS
+p1 <- ggplot(filter(r2_3d_all, cluster == "1"),
+             aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.58, color = "black") +
+  geom_text(aes(label = sig, y = r2 + 0.03), size = 7) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Cluster 1, 3D MDS",
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.02),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "plain"),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 13)
+  )
+
+p2 <- ggplot(filter(r2_3d_all, cluster == "2"),
+             aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.58, color = "black") +
+  geom_text(aes(label = sig, y = r2 + 0.03), size = 7) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Cluster 2, 3D MDS",
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.02),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "plain"),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 13)
+  )
+
+p1 + p2
+
+
+# 4D MDS
+p1 <- ggplot(filter(r2_4d_all, cluster == "1"),
+             aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.58, color = "black") +
+  geom_text(aes(label = sig, y = r2 + 0.03), size = 7) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Cluster 1, 4D MDS",
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.02),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "plain"),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 13)
+  )
+
+p2 <- ggplot(filter(r2_4d_all, cluster == "2"),
+             aes(x = feature, y = r2, fill = feature)) +
+  geom_col(width = 0.58, color = "black") +
+  geom_text(aes(label = sig, y = r2 + 0.03), size = 7) +
+  theme_classic(base_size = 13) +
+  labs(
+    title = "Cluster 2, 4D MDS",
+    x = NULL,
+    y = expression(r^2)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1.02),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "plain"),
+    axis.title.y = element_text(size = 14),
+    axis.text = element_text(size = 13)
+  )
+
+p1 + p2
+```
+
+
+```{r}
+# =========================
+# Export MDS coordinates + stimulus info for 3D website
+# =========================
+
+library(dplyr)
+library(jsonlite)
+
+# --------------------------------------------------
+# USER SETTINGS: edit these in each analysis file
+# --------------------------------------------------
+experiment_id <- "Exp2"         # "Exp1" or "Exp2"
+condition_id  <- "noInstr"    # "curvature" or "noInstr"
+
+# Assumes cluster_coords_3d already exists
+# and includes:
+#   Exp1: cluster, D1, D2, D3, nv, ang, sm
+#   Exp2: cluster, D1, D2, D3, nv, rng, sm
+
+# --------------------------------------------------
+# Basic checks
+# --------------------------------------------------
+required_common <- c("cluster", "D1", "D2", "D3", "nv", "sm")
+missing_common <- setdiff(required_common, names(cluster_coords_3d))
+
+if (length(missing_common) > 0) {
+  stop("cluster_coords_3d is missing required columns: ",
+       paste(missing_common, collapse = ", "))
+}
+
+# --------------------------------------------------
+# Build JSON data depending on experiment
+# --------------------------------------------------
+if (experiment_id == "Exp1") {
+
+  required_exp1 <- c("ang")
+  missing_exp1 <- setdiff(required_exp1, names(cluster_coords_3d))
+
+  if (length(missing_exp1) > 0) {
+    stop("For Exp1, cluster_coords_3d must contain: ",
+         paste(missing_exp1, collapse = ", "))
+  }
+
+  # Map analysis smoothness coding to image filename coding
+  # analysis: sm = 0,1,2
+  # image files: s0.0, s0.8, s1.4
+  sm_to_file <- c("0" = "0.0",
+                  "1" = "0.8",
+                  "2" = "1.4")
+
+  mds_web_data <- cluster_coords_3d %>%
+    mutate(
+      experiment  = experiment_id,
+      condition   = condition_id,
+      stimulus_id = paste0("nv", nv, "_ang", ang, "_sm", sm),
+
+      s_file = unname(sm_to_file[as.character(sm)]),
+
+      img_file = paste0(
+        "stim_nv", nv,
+        "_ang", ang,
+        "_s", s_file,
+        "_rot+000.png"
+      ),
+
+      # relative to HTML file location inside this condition folder
+      img_path = file.path("..", "figures", "stimuli", img_file),
+
+      rng = NA
+    ) %>%
+    select(
+      experiment,
+      condition,
+      cluster,
+      stimulus_id,
+      D1, D2, D3,
+      nv, ang, sm, rng,
+      img_file,
+      img_path
+    )
+
+} else if (experiment_id == "Exp2") {
+
+  required_exp2 <- c("rng")
+  missing_exp2 <- setdiff(required_exp2, names(cluster_coords_3d))
+
+  if (length(missing_exp2) > 0) {
+    stop("For Exp2, cluster_coords_3d must contain: ",
+         paste(missing_exp2, collapse = ", "))
+  }
+
+  mds_web_data <- cluster_coords_3d %>%
+    mutate(
+      experiment  = experiment_id,
+      condition   = condition_id,
+      stimulus_id = paste0("nv", nv, "_rng", rng, "_sm", sm),
+
+      # image names use curv0/1/2 even though analysis uses sm
+      img_file = paste0(
+        "circle_rng", rng,
+        "_N", nv,
+        "_curv", sm,
+        "_seed10.png"
+      ),
+
+      # relative to HTML file location inside this condition folder
+      img_path = file.path("..", "figures2", "images", img_file),
+
+      ang = NA
+    ) %>%
+    select(
+      experiment,
+      condition,
+      cluster,
+      stimulus_id,
+      D1, D2, D3,
+      nv, ang, rng, sm,
+      img_file,
+      img_path
+    )
+
+} else {
+  stop("experiment_id must be either 'Exp1' or 'Exp2'")
+}
+
+# --------------------------------------------------
+# Make output folder
+# --------------------------------------------------
+dir.create("mds_site", showWarnings = FALSE)
+
+# --------------------------------------------------
+# Write JSON
+# --------------------------------------------------
+write_json(
+  mds_web_data,
+  path = file.path("mds_site", "mds_data.json"),
+  pretty = TRUE,
+  auto_unbox = TRUE,
+  na = "null"
+)
+
+cat("Saved JSON to:", file.path("mds_site", "mds_data.json"), "\n")
+```
+
+```{r}
+# =========================
+# Export 3D envfit vectors for website
+# =========================
+
+library(dplyr)
+library(purrr)
+library(jsonlite)
+library(tibble)
+library(vegan)
+
+# --------------------------------------------------
+# USER SETTINGS: edit these in each analysis file
+# --------------------------------------------------
+experiment_id <- "Exp2"      # "Exp1" or "Exp2"
+condition_id  <- "noInstr"   # "curvature" or "noInstr"
+
+# Assumes cluster_coords_3d already exists and includes:
+#   common: cluster, D1, D2, D3, nv, sm
+#   Exp1: ang
+#   Exp2: rng
+
+# --------------------------------------------------
+# Basic checks
+# --------------------------------------------------
+required_common <- c("cluster", "D1", "D2", "D3", "nv", "sm")
+missing_common <- setdiff(required_common, names(cluster_coords_3d))
+
+if (length(missing_common) > 0) {
+  stop(
+    "cluster_coords_3d is missing required columns: ",
+    paste(missing_common, collapse = ", ")
+  )
+}
+
+if (experiment_id == "Exp1") {
+  feature_var <- "ang"
+} else if (experiment_id == "Exp2") {
+  feature_var <- "rng"
+} else {
+  stop("experiment_id must be either 'Exp1' or 'Exp2'")
+}
+
+if (!(feature_var %in% names(cluster_coords_3d))) {
+  stop(
+    "For ", experiment_id, ", cluster_coords_3d must contain column: ", feature_var
+  )
+}
+
+# --------------------------------------------------
+# Envfit helper
+# --------------------------------------------------
+run_envfit_3d <- function(df, feature_var, permutations = 999) {
+  coords <- df %>%
+    select(D1, D2, D3)
+
+  feats <- df %>%
+    select(sm, nv, all_of(feature_var)) %>%
+    mutate(across(everything(), as.numeric))
+
+  envfit(coords, feats, permutations = permutations, choices = 1:3)
+}
+
+# --------------------------------------------------
+# Extract envfit results into tidy table
+# --------------------------------------------------
+extract_envfit_vectors <- function(envfit_obj, cluster_id, experiment_id, condition_id) {
+
+  arrows <- envfit_obj$vectors$arrows %>%
+    as.data.frame() %>%
+    rownames_to_column("feature")
+
+  r2_vals <- envfit_obj$vectors$r
+  p_vals  <- envfit_obj$vectors$pvals
+
+  arrows %>%
+    mutate(
+      experiment = experiment_id,
+      condition  = condition_id,
+      cluster    = as.character(cluster_id),
+      r2         = unname(r2_vals[feature]),
+      pval       = unname(p_vals[feature])
+    ) %>%
+    select(
+      experiment,
+      condition,
+      cluster,
+      feature,
+      D1, D2, D3,
+      r2,
+      pval
+    ) %>%
+    mutate(
+      feature_label = case_when(
+        feature == "sm"  ~ "Smoothness",
+        feature == "nv"  ~ "NV",
+        feature == "rng" ~ "Range",
+        feature == "ang" ~ "Angle",
+        TRUE             ~ feature
+      )
+    ) %>%
+    select(
+      experiment,
+      condition,
+      cluster,
+      feature,
+      feature_label,
+      D1, D2, D3,
+      r2,
+      pval
+    )
+}
+
+# --------------------------------------------------
+# Run envfit per cluster
+# --------------------------------------------------
+clusters <- sort(unique(as.character(cluster_coords_3d$cluster)))
+
+envfit_3d_by_cluster <- map(clusters, function(cl) {
+  dfc <- cluster_coords_3d %>% filter(cluster == cl)
+  run_envfit_3d(dfc, feature_var = feature_var, permutations = 999)
+})
+names(envfit_3d_by_cluster) <- clusters
+
+# --------------------------------------------------
+# Combine into one export table
+# --------------------------------------------------
+vectorfit_web_data <- imap_dfr(envfit_3d_by_cluster, function(env, cl) {
+  extract_envfit_vectors(
+    envfit_obj     = env,
+    cluster_id     = cl,
+    experiment_id  = experiment_id,
+    condition_id   = condition_id
+  )
+})
+
+# Optional: inspect
+print(vectorfit_web_data)
+
+# --------------------------------------------------
+# Make output folder
+# --------------------------------------------------
+dir.create("mds_site", showWarnings = FALSE)
+
+# --------------------------------------------------
+# Write JSON
+# --------------------------------------------------
+write_json(
+  vectorfit_web_data,
+  path = file.path("mds_site", "vector_fits.json"),
+  pretty = TRUE,
+  auto_unbox = TRUE,
+  na = "null"
+)
+
+cat("Saved JSON to:", file.path("mds_site", "vector_fits.json"), "\n")
+```
+

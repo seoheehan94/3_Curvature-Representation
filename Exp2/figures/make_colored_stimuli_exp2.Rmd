@@ -1,0 +1,178 @@
+---
+title: "Exp2_Curvature_Analysis"
+output: html_document
+date: "2026-03-10"
+---
+
+```{r setup, include=FALSE}
+```
+
+
+```{r}
+# =========================================================
+# make_colored_stimuli_exp2.R
+#
+# Creates colored versions of Exp2 transparent stimulus PNGs
+# based on their feature values.
+#
+# PLACE THIS SCRIPT IN:
+#   ROP_Curvature/Exp2/stimuliGeneration/MainExp/
+#
+# INPUT:
+#   images/
+#
+# OUTPUT:
+#   images_colored/nv/
+#   images_colored/rng/
+#   images_colored/sm/
+#
+# Expected filename pattern:
+#   circle_rng12_N9_curv0_seed10.png
+#   circle_rng25_N18_curv1_seed26.png
+#   circle_rng45_N27_curv2_seed7.png
+#
+# =========================================================
+
+suppressPackageStartupMessages({
+  library(magick)
+  library(stringr)
+  library(fs)
+})
+
+# -----------------------------
+# PATHS
+# -----------------------------
+input_dir  <- "images"
+output_dir <- "images_colored"
+
+output_nv_dir  <- file.path(output_dir, "nv")
+output_rng_dir <- file.path(output_dir, "rng")
+output_sm_dir  <- file.path(output_dir, "sm")
+
+dir_create(output_nv_dir, recurse = TRUE)
+dir_create(output_rng_dir, recurse = TRUE)
+dir_create(output_sm_dir, recurse = TRUE)
+
+# -----------------------------
+# FIXED COLOR MAPS
+# -----------------------------
+nv_colors <- c(
+  `9`  = "#4E79A7",
+  `18` = "#F28E2B",
+  `27` = "#59A14F"
+)
+
+rng_colors <- c(
+  `12` = "#4E79A7",
+  `25` = "#F28E2B",
+  `45` = "#59A14F"
+)
+
+sm_colors <- c(
+  `0` = "#4E79A7",
+  `1` = "#F28E2B",
+  `2` = "#59A14F"
+)
+
+# -----------------------------
+# HELPER: parse filename
+# -----------------------------
+parse_features_from_filename <- function(filename) {
+  pattern <- "^circle_rng([0-9]+)_N([0-9]+)_curv([0-9]+)_seed([0-9]+)\\.png$"
+  m <- str_match(filename, pattern)
+
+  if (all(is.na(m))) {
+    return(NULL)
+  }
+
+  list(
+    rng  = m[2],
+    nv   = m[3],
+    sm   = m[4],
+    seed = m[5]
+  )
+}
+
+# -----------------------------
+# HELPER: recolor PNG while preserving alpha
+# -----------------------------
+recolor_png_keep_alpha <- function(input_path, output_path, fill_color) {
+  img <- image_read(input_path)
+
+  info <- image_info(img)
+  width <- info$width[1]
+  height <- info$height[1]
+
+  solid <- image_blank(width = width, height = height, color = fill_color)
+
+  alpha <- image_fx(img, expression = "a")
+
+  colored <- image_composite(solid, alpha, operator = "copyopacity")
+
+  image_write(colored, path = output_path, format = "png")
+}
+
+# -----------------------------
+# GET FILES
+# -----------------------------
+files <- dir_ls(input_dir, regexp = "\\.png$", type = "file")
+
+if (length(files) == 0) {
+  stop("No PNG files found in: ", normalizePath(input_dir, winslash = "/", mustWork = FALSE))
+}
+
+cat("Found", length(files), "PNG files in", normalizePath(input_dir, winslash = "/", mustWork = FALSE), "\n")
+
+# -----------------------------
+# PROCESS FILES
+# -----------------------------
+n_done <- 0
+n_skipped <- 0
+
+for (input_path in files) {
+  filename <- path_file(input_path)
+  parsed <- parse_features_from_filename(filename)
+
+  if (is.null(parsed)) {
+    message("Skipping file with unexpected name format: ", filename)
+    n_skipped <- n_skipped + 1
+    next
+  }
+
+  nv_val  <- parsed$nv
+  rng_val <- parsed$rng
+  sm_val  <- parsed$sm
+
+  nv_color  <- nv_colors[[nv_val]]
+  rng_color <- rng_colors[[rng_val]]
+  sm_color  <- sm_colors[[sm_val]]
+
+  if (is.null(nv_color) || is.null(rng_color) || is.null(sm_color)) {
+    message("Skipping file with unmapped feature value: ", filename)
+    n_skipped <- n_skipped + 1
+    next
+  }
+
+  out_nv  <- file.path(output_nv_dir, filename)
+  out_rng <- file.path(output_rng_dir, filename)
+  out_sm  <- file.path(output_sm_dir, filename)
+
+  recolor_png_keep_alpha(input_path, out_nv,  nv_color)
+  recolor_png_keep_alpha(input_path, out_rng, rng_color)
+  recolor_png_keep_alpha(input_path, out_sm,  sm_color)
+
+  n_done <- n_done + 1
+}
+
+# -----------------------------
+# SUMMARY
+# -----------------------------
+cat("\nDone.\n")
+cat("Processed:", n_done, "files\n")
+cat("Skipped:", n_skipped, "files\n")
+cat("\nCreated folders:\n")
+cat(" -", normalizePath(output_nv_dir, winslash = "/", mustWork = FALSE), "\n")
+cat(" -", normalizePath(output_rng_dir, winslash = "/", mustWork = FALSE), "\n")
+cat(" -", normalizePath(output_sm_dir, winslash = "/", mustWork = FALSE), "\n")
+```
+

@@ -1,0 +1,1451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ROP Curvature - Interactive 3D MDS Viewer</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg: #f3f3f3;
+      --panel: rgba(255,255,255,0.97);
+      --text: #1f1f1f;
+      --text-mid: #444;
+      --text-soft: #666;
+      --text-label: #333;
+      --line-soft: rgba(0,0,0,0.08);
+      --shadow: 0 3px 14px rgba(0,0,0,0.15);
+      --radius: 12px;
+    }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      text-rendering: optimizeLegibility;
+    }
+
+    #controls {
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      z-index: 20;
+      background: rgba(255,255,255,0.95);
+      padding: 12px 14px;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      width: 270px;
+      max-height: calc(100vh - 30px);
+      overflow-y: auto;
+    }
+
+    #controls h2 {
+      margin: 0 0 10px 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      color: var(--text);
+    }
+
+    #controls p {
+      margin: 6px 0 14px 0;
+      font-size: 14px;
+      font-weight: 400;
+      line-height: 1.45;
+      color: #4a4a4a;
+    }
+
+    #controls label {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      display: block;
+      margin-top: 4px;
+      color: var(--text-label);
+      line-height: 1.3;
+    }
+
+    #controls select {
+      width: 100%;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 400;
+      padding: 6px 8px;
+      margin-top: 5px;
+      margin-bottom: 10px;
+      border: 1px solid rgba(0,0,0,0.14);
+      border-radius: 8px;
+      background: #fff;
+      color: #222;
+      box-sizing: border-box;
+    }
+
+    #controls input[type="range"] {
+      width: 100%;
+      margin-top: 8px;
+      margin-bottom: 14px;
+      box-sizing: border-box;
+      display: block;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1.4;
+      color: #555;
+      cursor: pointer;
+    }
+
+    .checkbox-row input[type="checkbox"] {
+      width: auto;
+      margin: 0;
+    }
+
+    .panel-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #555;
+      margin-bottom: 8px;
+      line-height: 1.25;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #444;
+    }
+
+    .legend-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      border: 1px solid rgba(0,0,0,0.15);
+      flex: 0 0 14px;
+    }
+
+    #tooltip {
+      position: absolute;
+      display: none;
+      z-index: 30;
+      background: rgba(0,0,0,0.85);
+      color: white;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1.45;
+      pointer-events: none;
+      max-width: 240px;
+    }
+
+    #errorBox {
+      position: absolute;
+      bottom: 15px;
+      left: 15px;
+      z-index: 50;
+      background: rgba(180, 0, 0, 0.92);
+      color: white;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      max-width: 620px;
+      display: none;
+      white-space: pre-wrap;
+    }
+
+    #titleOverlay {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      z-index: 20;
+      background: var(--panel);
+      padding: 16px 18px;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      width: 320px;
+    }
+
+    #titleMain {
+      margin-bottom: 10px;
+    }
+
+    #titleExp {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.05;
+      color: var(--text);
+    }
+
+    #titleCond {
+      font-size: 15px;
+      font-weight: 500;
+      margin-top: 6px;
+      color: #555;
+      line-height: 1.25;
+    }
+
+    #titleCluster {
+      font-size: 17px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #2d2d2d;
+      line-height: 1.25;
+    }
+
+    #titleDescription {
+      font-size: 14px;
+      font-weight: 400;
+      line-height: 1.5;
+      color: var(--text-mid);
+    }
+
+    #vectorPanel {
+      position: absolute;
+      top: 220px;
+      right: 15px;
+      z-index: 20;
+      background: var(--panel);
+      padding: 12px 14px;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      width: 320px;
+      max-height: 340px;
+      overflow-y: auto;
+      display: block;
+    }
+
+    #legendOverlay {
+      position: absolute;
+      top: 570px;
+      left: 15px;
+      z-index: 20;
+      background: var(--panel);
+      padding: 12px 14px;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      width: 270px;
+      display: none;
+    }
+
+    #introOverlay {
+      position: absolute;
+      inset: 0;
+      z-index: 100;
+      background: rgba(243,243,243,0.92);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #introCard {
+      width: 700px;
+      max-width: calc(100vw - 40px);
+      background: rgba(255,255,255,0.98);
+      border-radius: 18px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.16);
+      padding: 28px 32px;
+    }
+
+    #introCard h1 {
+      margin: 0 0 16px 0;
+      font-size: 30px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      color: var(--text);
+    }
+
+    #introCard p {
+      font-size: 14px;
+      font-weight: 400;
+      line-height: 1.55;
+      color: var(--text-mid);
+      margin: 0 0 14px 0;
+    }
+
+    #introButton {
+      margin-top: 10px;
+      padding: 12px 18px;
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      border: none;
+      border-radius: 10px;
+      background: #333;
+      color: white;
+      cursor: pointer;
+    }
+
+    #introButton:hover {
+      background: #222;
+    }
+
+    .small-note {
+      font-size: 12px;
+      font-weight: 400;
+      color: #666;
+      margin-top: 8px;
+      line-height: 1.4;
+    }
+
+    .subtle {
+      color: #666;
+      font-size: 12px;
+      font-weight: 400;
+      line-height: 1.4;
+    }
+
+    .vector-summary {
+      font-size: 14px;
+      font-weight: 400;
+      line-height: 1.5;
+      color: var(--text-mid);
+      margin-bottom: 10px;
+    }
+
+    .vector-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .vector-table th,
+    .vector-table td {
+      padding: 6px 4px;
+      border-bottom: 1px solid var(--line-soft);
+      text-align: left;
+      vertical-align: top;
+      line-height: 1.4;
+    }
+
+    .vector-table th {
+      font-size: 13px;
+      font-weight: 600;
+      color: #444;
+    }
+
+    .vector-table td {
+      color: #333;
+      font-weight: 400;
+    }
+
+    .sig-yes {
+      font-weight: 700;
+      color: #1b5e20;
+    }
+
+    .sig-no {
+      color: #777;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="controls">
+    <h2>Interactive 3D MDS</h2>
+    <p>
+      Drag to freely explore the 3D space.
+    </p>
+
+    <label for="experimentSelect">Experiment</label>
+    <select id="experimentSelect">
+      <option value="Exp1">Experiment 1 (1D contours)</option>
+      <option value="Exp2" selected>Experiment 2 (2D shapes)</option>
+    </select>
+
+    <label for="conditionSelect">Condition</label>
+    <select id="conditionSelect">
+      <option value="curvature">Curvature Instruction</option>
+      <option value="noInstr">No Instruction</option>
+    </select>
+
+    <label for="clusterSelect">Cluster</label>
+    <select id="clusterSelect">
+      <option value="1">Cluster 1</option>
+      <option value="2">Cluster 2</option>
+    </select>
+
+    <label for="colorBySelect">Color by</label>
+    <select id="colorBySelect">
+      <option value="none" selected>None</option>
+      <option value="nv">Vertices (nv)</option>
+      <option value="rng">Range / angle</option>
+      <option value="sm">Smoothness (sm)</option>
+    </select>
+
+    <label for="sizeSlider">Stimulus size</label>
+    <input type="range" id="sizeSlider" min="0.10" max="0.80" step="0.01" value="0.26">
+
+    <label class="checkbox-row" for="toggleAxes">
+      <input type="checkbox" id="toggleAxes" checked>
+      Show axes
+    </label>
+
+    <label class="checkbox-row" for="toggleGrid">
+      <input type="checkbox" id="toggleGrid" checked>
+      Show grid
+    </label>
+
+    <label class="checkbox-row" for="togglePlanes">
+      <input type="checkbox" id="togglePlanes">
+      Show planes
+    </label>
+
+    <label class="checkbox-row" for="toggleVectors">
+      <input type="checkbox" id="toggleVectors">
+      Show vector fits
+    </label>
+
+    <label class="checkbox-row" for="toggleAutoRotate">
+      <input type="checkbox" id="toggleAutoRotate">
+      Auto-rotate
+    </label>
+  </div>
+
+  <div id="titleOverlay">
+    <div id="titleMain">
+      <div id="titleExp">Experiment 2</div>
+      <div id="titleCond">Curvature Condition</div>
+    </div>
+    <div id="titleCluster">Cluster 1</div>
+    <div id="titleDescription">Perceptual space mainly organized by "number of vertices" and "range"</div>
+  </div>
+
+  <div id="vectorPanel">
+    <div class="panel-title">Vector fits</div>
+    <div id="vectorSummary" class="vector-summary"></div>
+    <div id="vectorContent"></div>
+  </div>
+
+  <div id="legendOverlay">
+    <div class="panel-title" id="legendTitle">Legend</div>
+    <div id="legendContent"></div>
+  </div>
+
+  <div id="introOverlay">
+    <div id="introCard">
+      <h1>Explore the 3D Perceptual Space</h1>
+      <p>
+        This interactive viewer shows estimated perceptual spaces derived from odd-one-out judgements.
+      </p>
+      <p>
+        The positions of stimuli are obtained using a <strong>3D multidimensional scaling (MDS)</strong> solution, which places stimuli in a three-dimensional space such that distances reflect perceived similarity.
+      </p>
+      <p>
+        Use the left panel to select the <strong>experiment</strong>, <strong>condition</strong>, and <strong>cluster</strong>, and to select display options and vector fits.
+      </p>
+      <p>
+        Drag to rotate, scroll to zoom, and hover over a stimulus to view its feature values.
+      </p>
+      <p>
+        Select an experiment, condition, and cluster to explore the estimated perceptual space.
+      </p>
+      <button id="introButton">Start exploring</button>
+    </div>
+  </div>
+  
+  <div id="tooltip"></div>
+  <div id="errorBox"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { TrackballControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/TrackballControls.js';
+
+    const errorBox = document.getElementById("errorBox");
+
+    function showError(msg) {
+      console.error(msg);
+      errorBox.style.display = "block";
+      errorBox.textContent = msg;
+    }
+
+    function clearError() {
+      errorBox.style.display = "none";
+      errorBox.textContent = "";
+    }
+
+    try {
+      // =========================================================
+      // Scene setup
+      // =========================================================
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xf3f3f3);
+
+      const camera = new THREE.PerspectiveCamera(
+        50,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      camera.position.set(0, 0, 5);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      document.body.appendChild(renderer.domElement);
+
+      // =========================================================
+      // UI references
+      // =========================================================
+      const tooltip = document.getElementById("tooltip");
+
+      const experimentSelect = document.getElementById("experimentSelect");
+      const conditionSelect  = document.getElementById("conditionSelect");
+      const clusterSelect    = document.getElementById("clusterSelect");
+      const colorBySelect    = document.getElementById("colorBySelect");
+      const sizeSlider       = document.getElementById("sizeSlider");
+
+      const toggleAxes       = document.getElementById("toggleAxes");
+      const toggleGrid       = document.getElementById("toggleGrid");
+      const togglePlanes     = document.getElementById("togglePlanes");
+      const toggleVectors    = document.getElementById("toggleVectors");
+      const toggleAutoRotate = document.getElementById("toggleAutoRotate");
+
+      const legendContent    = document.getElementById("legendContent");
+      const legendTitle      = document.getElementById("legendTitle");
+      const legendOverlay    = document.getElementById("legendOverlay");
+
+      const titleCluster     = document.getElementById("titleCluster");
+      const titleDescription = document.getElementById("titleDescription");
+
+      const vectorPanel      = document.getElementById("vectorPanel");
+      const vectorSummary    = document.getElementById("vectorSummary");
+      const vectorContent    = document.getElementById("vectorContent");
+
+      const introOverlay     = document.getElementById("introOverlay");
+      const introButton      = document.getElementById("introButton");
+
+      // =========================================================
+      // Controls
+      // =========================================================
+      const controls = new TrackballControls(camera, renderer.domElement);
+      controls.rotateSpeed = 4.0;
+      controls.zoomSpeed = 1.2;
+      controls.panSpeed = 0.8;
+      controls.noZoom = false;
+      controls.noPan = false;
+      controls.staticMoving = false;
+      controls.dynamicDampingFactor = 0.12;
+      controls.minDistance = 1.5;
+      controls.maxDistance = 12;
+      controls.target.set(0, 0, 0);
+      controls.update();
+
+      // =========================================================
+      // State
+      // =========================================================
+      const raycaster = new THREE.Raycaster();
+      const mouse = new THREE.Vector2();
+
+      let allData = [];
+      let allVectorFits = [];
+      let sprites = [];
+      let currentHover = null;
+
+      let autoRotateEnabled = false;
+
+      controls.addEventListener("start", () => {
+        autoRotateEnabled = false;
+        toggleAutoRotate.checked = false;
+      });
+
+      const featureColorMaps = {
+        nv: {
+          1:  "#4E79A7",
+          2:  "#F28E2B",
+          3:  "#59A14F",
+          9:  "#4E79A7",
+          18: "#F28E2B",
+          27: "#59A14F"
+        },
+        ang: {
+          45:  "#4E79A7",
+          90:  "#F28E2B",
+          135: "#59A14F"
+        },
+        rng: {
+          12: "#4E79A7",
+          25: "#F28E2B",
+          45: "#59A14F"
+        },
+        sm: {
+          0: "#4E79A7",
+          1: "#F28E2B",
+          2: "#59A14F"
+        }
+      };
+
+      // =========================================================
+      // Lighting
+      // =========================================================
+      const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
+      scene.add(ambientLight);
+
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+      directionalLight.position.set(2, 2, 3);
+      scene.add(directionalLight);
+
+      // =========================================================
+      // Grid
+      // =========================================================
+      const gridHelper = new THREE.GridHelper(4, 8, 0xcccccc, 0xdddddd);
+      gridHelper.rotation.x = Math.PI / 2;
+      gridHelper.visible = true;
+      scene.add(gridHelper);
+
+      // =========================================================
+      // Orthogonal planes
+      // =========================================================
+      const planeGroup = new THREE.Group();
+      planeGroup.visible = false;
+      scene.add(planeGroup);
+
+      function createPlane(size, color = 0xcccccc, opacity = 0.12) {
+        const geometry = new THREE.PlaneGeometry(size, size);
+        const material = new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+        return new THREE.Mesh(geometry, material);
+      }
+
+      function buildPlanes() {
+        const size = 4;
+
+        const planeXY = createPlane(size);
+        planeGroup.add(planeXY);
+
+        const planeXZ = createPlane(size);
+        planeXZ.rotation.x = Math.PI / 2;
+        planeGroup.add(planeXZ);
+
+        const planeYZ = createPlane(size);
+        planeYZ.rotation.y = Math.PI / 2;
+        planeGroup.add(planeYZ);
+      }
+
+      buildPlanes();
+
+      // =========================================================
+      // Axes
+      // =========================================================
+      const axisGroup = new THREE.Group();
+      scene.add(axisGroup);
+
+      const vectorGroup = new THREE.Group();
+      scene.add(vectorGroup);
+
+      function createAxisLine(start, end) {
+        const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
+        const material = new THREE.LineBasicMaterial({ color: 0x666666 });
+        return new THREE.Line(geometry, material);
+      }
+
+      function createTextSprite(message, fontSize = 36, textColor = "#333333", width = 256, height = 128) {
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+
+        canvas.width = width;
+        canvas.height = height;
+
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.font = `${fontSize}px Inter`;
+        context.fillStyle = textColor;
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.fillText(message, canvas.width / 2, canvas.height / 2);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        const material = new THREE.SpriteMaterial({
+          map: texture,
+          transparent: true,
+          depthTest: false
+        });
+
+        const sprite = new THREE.Sprite(material);
+        return sprite;
+      }
+
+      function clearAxisGroup() {
+        while (axisGroup.children.length > 0) {
+          const obj = axisGroup.children[0];
+          axisGroup.remove(obj);
+
+          if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+          }
+          if (obj.geometry) obj.geometry.dispose();
+        }
+      }
+
+      function buildAxes() {
+        clearAxisGroup();
+
+        const axisLength = 1.8;
+
+        const d1Axis = createAxisLine(
+          new THREE.Vector3(-axisLength, 0, 0),
+          new THREE.Vector3(axisLength, 0, 0)
+        );
+        axisGroup.add(d1Axis);
+
+        const d1Label = createTextSprite('D1');
+        d1Label.position.set(axisLength + 0.18, 0, 0);
+        d1Label.scale.set(0.45, 0.22, 1);
+        axisGroup.add(d1Label);
+
+        const d2Axis = createAxisLine(
+          new THREE.Vector3(0, -axisLength, 0),
+          new THREE.Vector3(0, axisLength, 0)
+        );
+        axisGroup.add(d2Axis);
+
+        const d2Label = createTextSprite('D2');
+        d2Label.position.set(0, axisLength + 0.18, 0);
+        d2Label.scale.set(0.45, 0.22, 1);
+        axisGroup.add(d2Label);
+
+        const d3Axis = createAxisLine(
+          new THREE.Vector3(0, 0, -axisLength),
+          new THREE.Vector3(0, 0, axisLength)
+        );
+        axisGroup.add(d3Axis);
+
+        const d3Label = createTextSprite('D3');
+        d3Label.position.set(0, 0, axisLength + 0.18);
+        d3Label.scale.set(0.45, 0.22, 1);
+        axisGroup.add(d3Label);
+      }
+
+      buildAxes();
+
+      // =========================================================
+      // Cluster descriptions
+      // =========================================================
+      const clusterDescriptions = {
+        Exp1: {
+          curvature: {
+            "1": `Perceptual space mainly organized by "number of vertices"`,
+            "2": `Perceptual space mainly organized by "smoothness"`
+          },
+          noInstr: {
+            "1": `Perceptual space mainly organized by "number of vertices"`,
+            "2": `Perceptual space mainly organized by "smoothness"`
+          }
+        },
+        Exp2: {
+          curvature: {
+            "1": `Perceptual space mainly organized by "number of vertices" and "range"`,
+            "2": `Perceptual space organized somewhat by "smoothness"`
+          },
+          noInstr: {
+            "1": `Perceptual space mainly organized by "number of vertices" and "range"`,
+            "2": `Perceptual space organized somewhat by "smoothness"`
+          }
+        }
+      };
+
+      // =========================================================
+      // Helpers
+      // =========================================================
+      function getCurrentExperiment() {
+        return experimentSelect.value;
+      }
+
+      function getCurrentCondition() {
+        return conditionSelect.value;
+      }
+
+      function getCurrentCluster() {
+        return clusterSelect.value;
+      }
+
+      function getConditionPretty(cond) {
+        return cond === "curvature" ? "Curvature Instruction" : "No Instruction";
+      }
+
+      function getExperimentPretty(exp) {
+        return exp === "Exp1" ? "Experiment 1 (1D contours)" : "Experiment 2 (2D shapes)";
+      }
+
+      function getRangeFeatureKey() {
+        return getCurrentExperiment() === "Exp1" ? "ang" : "rng";
+      }
+
+      function getFeaturePretty(feature) {
+        if (feature === "sm") return "Smoothness";
+        if (feature === "nv") return "Number of Vertices";
+        if (feature === "ang") return "Angle";
+        if (feature === "rng") return "Range";
+        return feature;
+      }
+
+      function getFeatureDescription(feature) {
+        if (feature === "sm") return "How smooth versus angular the stimulus is";
+        if (feature === "nv") return "Number of vertices / turning points";
+        if (feature === "ang") return "Turning angle magnitude";
+        if (feature === "rng") return "Range / spread parameter";
+        return "";
+      }
+
+      function getFeatureColorHex(feature) {
+        if (feature === "sm") return "#59A14F";
+        if (feature === "nv") return "#4E79A7";
+        if (feature === "ang") return "#F28E2B";
+        if (feature === "rng") return "#F28E2B";
+        return "#666666";
+      }
+
+      function getFeatureColorInt(feature) {
+        return Number("0x" + getFeatureColorHex(feature).replace("#", ""));
+      }
+
+      function updateColorByOptions() {
+        const exp = getCurrentExperiment();
+        const rangeText = exp === "Exp1" ? "Angle (ang)" : "Range (rng)";
+        const currentValue = colorBySelect.value;
+
+        colorBySelect.innerHTML = `
+          <option value="none">None</option>
+          <option value="nv">Vertices (nv)</option>
+          <option value="rng">${rangeText}</option>
+          <option value="sm">Smoothness (sm)</option>
+        `;
+
+        if (["none", "nv", "rng", "sm"].includes(currentValue)) {
+          colorBySelect.value = currentValue;
+        } else {
+          colorBySelect.value = "none";
+        }
+      }
+
+      function updateTitleOverlay() {
+        const exp = getCurrentExperiment();
+        const cond = getCurrentCondition();
+        const cluster = getCurrentCluster();
+
+        const expText = exp === "Exp1" ? "Experiment 1" : "Experiment 2";
+        const condText = cond === "curvature" ? "Curvature Condition" : "No Instruction Condition";
+
+        document.getElementById("titleExp").textContent = expText;
+        document.getElementById("titleCond").textContent = condText;
+
+        titleCluster.textContent = `Cluster ${cluster}`;
+
+        titleDescription.textContent =
+          clusterDescriptions?.[exp]?.[cond]?.[cluster] ||
+          "No description available for this cluster yet.";
+      }
+
+      function clearSprites() {
+        for (const s of sprites) {
+          scene.remove(s);
+          if (s.material.map) s.material.map.dispose();
+          s.material.dispose();
+        }
+        sprites = [];
+      }
+
+      function clearVectorGroup() {
+        while (vectorGroup.children.length > 0) {
+          const obj = vectorGroup.children[0];
+          vectorGroup.remove(obj);
+
+          if (obj.material) {
+            if (Array.isArray(obj.material)) {
+              obj.material.forEach(m => {
+                if (m.map) m.map.dispose();
+                m.dispose();
+              });
+            } else {
+              if (obj.material.map) obj.material.map.dispose();
+              obj.material.dispose();
+            }
+          }
+
+          if (obj.geometry) obj.geometry.dispose();
+        }
+      }
+
+      function normalizeData(data) {
+        const xs = data.map(d => Number(d.D1));
+        const ys = data.map(d => Number(d.D2));
+        const zs = data.map(d => Number(d.D3));
+
+        const xMin = Math.min(...xs), xMax = Math.max(...xs);
+        const yMin = Math.min(...ys), yMax = Math.max(...ys);
+        const zMin = Math.min(...zs), zMax = Math.max(...zs);
+
+        const xMid = (xMin + xMax) / 2;
+        const yMid = (yMin + yMax) / 2;
+        const zMid = (zMin + zMax) / 2;
+
+        const xRange = (xMax - xMin) || 1;
+        const yRange = (yMax - yMin) || 1;
+        const zRange = (zMax - zMin) || 1;
+
+        return data.map(d => ({
+          ...d,
+          x: ((Number(d.D1) - xMid) / xRange) * 3.0,
+          y: ((Number(d.D2) - yMid) / yRange) * 3.0,
+          z: ((Number(d.D3) - zMid) / zRange) * 3.0
+        }));
+      }
+
+      function getJsonPath() {
+        const exp = getCurrentExperiment();
+        const cond = getCurrentCondition();
+        return `./${exp}/${exp}_${cond}/mds_site/mds_data.json`;
+      }
+
+      function getVectorJsonPath() {
+        const exp = getCurrentExperiment();
+        const cond = getCurrentCondition();
+        return `./${exp}/${exp}_${cond}/mds_site/vector_fits.json`;
+      }
+
+      function getImagePath(d, colorBy) {
+        const exp = d.experiment || getCurrentExperiment();
+        const filename = d.img_file;
+
+        if (exp === "Exp1") {
+          if (colorBy === "none") return `./Exp1/figures/stimuli/${filename}`;
+          if (colorBy === "nv")   return `./Exp1/figures/stimuli_colored/nv/${filename}`;
+          if (colorBy === "rng")  return `./Exp1/figures/stimuli_colored/ang/${filename}`;
+          if (colorBy === "sm")   return `./Exp1/figures/stimuli_colored/sm/${filename}`;
+        }
+
+        if (exp === "Exp2") {
+          if (colorBy === "none") return `./Exp2/figures2/images/${filename}`;
+          if (colorBy === "nv")   return `./Exp2/figures2/images_colored/nv/${filename}`;
+          if (colorBy === "rng")  return `./Exp2/figures2/images_colored/rng/${filename}`;
+          if (colorBy === "sm")   return `./Exp2/figures2/images_colored/sm/${filename}`;
+        }
+
+        return null;
+      }
+
+      function updateLegend() {
+        const colorBy = colorBySelect.value;
+        const exp = getCurrentExperiment();
+
+        if (colorBy === "none") {
+          legendOverlay.style.display = "none";
+          legendContent.innerHTML = "";
+          return;
+        }
+
+        let label = "";
+        let entries = [];
+
+        if (colorBy === "nv") {
+          label = "Number of Vertices";
+          if (exp === "Exp1") {
+            entries = [
+              { value: 1, color: featureColorMaps.nv[1] },
+              { value: 2, color: featureColorMaps.nv[2] },
+              { value: 3, color: featureColorMaps.nv[3] }
+            ];
+          } else {
+            entries = [
+              { value: 9,  color: featureColorMaps.nv[9] },
+              { value: 18, color: featureColorMaps.nv[18] },
+              { value: 27, color: featureColorMaps.nv[27] }
+            ];
+          }
+        } else if (colorBy === "rng") {
+          if (exp === "Exp1") {
+            label = "Angle";
+            entries = [
+              { value: 45,  color: featureColorMaps.ang[45] },
+              { value: 90,  color: featureColorMaps.ang[90] },
+              { value: 135, color: featureColorMaps.ang[135] }
+            ];
+          } else {
+            label = "Range";
+            entries = [
+              { value: 12, color: featureColorMaps.rng[12] },
+              { value: 25, color: featureColorMaps.rng[25] },
+              { value: 45, color: featureColorMaps.rng[45] }
+            ];
+          }
+        } else if (colorBy === "sm") {
+          label = "Smoothness";
+          entries = [
+            { value: 0, color: featureColorMaps.sm[0] },
+            { value: 1, color: featureColorMaps.sm[1] },
+            { value: 2, color: featureColorMaps.sm[2] }
+          ];
+        }
+
+        legendTitle.textContent = `Legend — ${label}`;
+        legendContent.innerHTML = entries.map(entry => `
+          <div class="legend-row">
+            <div class="legend-swatch" style="background:${entry.color};"></div>
+            <div>${entry.value}</div>
+          </div>
+        `).join("");
+
+        legendOverlay.style.display = "block";
+      }
+
+      function getCurrentVectorFits() {
+        const exp = getCurrentExperiment();
+        const cond = getCurrentCondition();
+        const cluster = getCurrentCluster();
+
+        return allVectorFits.filter(v =>
+          String(v.experiment) === String(exp) &&
+          String(v.condition) === String(cond) &&
+          String(v.cluster) === String(cluster)
+        );
+      }
+
+      function formatPValue(p) {
+        const num = Number(p);
+        if (num < 0.001) return "< .001";
+        return `= ${num.toFixed(3)}`;
+      }
+
+      function updateVectorPanel() {
+        const fits = getCurrentVectorFits();
+
+        if (!toggleVectors.checked || fits.length === 0) {
+          vectorPanel.style.display = "none";
+          return;
+        }
+
+        vectorPanel.style.display = "block";
+
+        const sorted = [...fits].sort((a, b) => Number(b.r2) - Number(a.r2));
+
+        vectorSummary.innerHTML = `
+          Vector fitting shows how strongly each feature aligns with the current 3D MDS solution.
+          Only significant vectors are displayed in the plot; all fitted features are listed in the table below.
+        `;
+
+        vectorContent.innerHTML = `
+          <table class="vector-table">
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th>r²</th>
+                <th>p</th>
+                <th>Sig.</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sorted.map(v => {
+                const sig = Number(v.pval) < 0.05;
+                const label = v.feature_label || getFeaturePretty(v.feature);
+
+                return `
+                  <tr>
+                    <td>${label}</td>
+                    <td>${Number(v.r2).toFixed(2)}</td>
+                    <td>${formatPValue(v.pval)}</td>
+                    <td class="${sig ? 'sig-yes' : 'sig-no'}">${sig ? '*' : 'n.s.'}</td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        `;
+      }
+
+      function applyArrowOpacity(arrowHelper, opacity) {
+        if (arrowHelper.line?.material) {
+          arrowHelper.line.material.transparent = true;
+          arrowHelper.line.material.opacity = opacity;
+          arrowHelper.line.material.depthTest = false;
+        }
+        if (arrowHelper.cone?.material) {
+          arrowHelper.cone.material.transparent = true;
+          arrowHelper.cone.material.opacity = opacity;
+          arrowHelper.cone.material.depthTest = false;
+        }
+      }
+
+      function createThickArrow(direction, length, color) {
+
+        const group = new THREE.Group();
+
+        const dir = direction.clone().normalize();
+
+        const shaftRadius = 0.01;
+        const headRadius  = 0.035;
+        const headLength  = 0.15;
+
+        const shaftLength = length - headLength;
+
+        const shaftGeo = new THREE.CylinderGeometry(
+          shaftRadius,
+          shaftRadius,
+          shaftLength,
+          16
+        );
+
+        const mat = new THREE.MeshBasicMaterial({
+          color: color,
+          transparent: true
+        });
+
+        const shaft = new THREE.Mesh(shaftGeo, mat);
+        shaft.position.y = shaftLength / 2;
+
+        const headGeo = new THREE.ConeGeometry(headRadius, headLength, 16);
+        const head = new THREE.Mesh(headGeo, mat);
+
+        head.position.y = shaftLength + headLength / 2;
+
+        group.add(shaft);
+        group.add(head);
+
+        const axis = new THREE.Vector3(0, 1, 0);
+        group.quaternion.setFromUnitVectors(axis, dir);
+
+        return group;
+      }
+
+      function renderVectors() {
+        clearVectorGroup();
+
+        const fits = getCurrentVectorFits();
+
+        if (!toggleVectors.checked || fits.length === 0) {
+          vectorGroup.visible = false;
+          updateVectorPanel();
+          return;
+        }
+
+        vectorGroup.visible = true;
+
+        const sigFits = fits.filter(v => Number(v.pval) < 0.05);
+
+        for (const v of sigFits) {
+          const dir = new THREE.Vector3(Number(v.D1), Number(v.D2), Number(v.D3));
+
+          if (dir.length() === 0) continue;
+          dir.normalize();
+
+          const r2 = Number(v.r2);
+          const color = 0x2f2f2f;
+          const length = 0.7 + (1.5 * r2);
+
+          const arrow = createThickArrow(dir, length, color);
+
+          arrow.traverse(obj => {
+            if (obj.material) {
+              obj.material.opacity = 0.92;
+            }
+          });
+
+          vectorGroup.add(arrow);
+
+          const labelSprite = createTextSprite(
+            v.feature_label || getFeaturePretty(v.feature),
+            30,
+            "#222222",
+            320,
+            120
+          );
+
+          labelSprite.position.copy(dir.clone().multiplyScalar(length + 0.20));
+          labelSprite.scale.set(0.65, 0.24, 1);
+          vectorGroup.add(labelSprite);
+        }
+
+        updateVectorPanel();
+      }
+
+      async function renderCluster(clusterValue) {
+        clearSprites();
+        clearError();
+
+        const filtered = allData.filter(d => String(d.cluster) === String(clusterValue));
+
+        if (!filtered.length) {
+          showError(`No rows matched cluster "${clusterValue}".`);
+          return;
+        }
+
+        const normData = normalizeData(filtered);
+        const loader = new THREE.TextureLoader();
+        const spriteSize = Number(sizeSlider.value);
+        const colorBy = colorBySelect.value;
+
+        const texturePromises = normData.map(d => {
+          return new Promise(resolve => {
+            const imagePath = getImagePath(d, colorBy);
+
+            loader.load(
+              imagePath,
+              texture => resolve({ d, texture, imagePath, ok: true }),
+              undefined,
+              () => resolve({ d, texture: null, imagePath, ok: false })
+            );
+          });
+        });
+
+        const loaded = await Promise.all(texturePromises);
+        let failures = 0;
+
+        for (const item of loaded) {
+          if (!item.ok || !item.texture) {
+            failures += 1;
+            continue;
+          }
+
+          item.texture.colorSpace = THREE.SRGBColorSpace;
+
+          const material = new THREE.SpriteMaterial({
+            map: item.texture,
+            transparent: true
+          });
+
+          const sprite = new THREE.Sprite(material);
+          sprite.position.set(item.d.x, item.d.y, item.d.z);
+          sprite.scale.set(spriteSize, spriteSize, spriteSize);
+          sprite.userData = item.d;
+
+          scene.add(sprite);
+          sprites.push(sprite);
+        }
+
+        if (failures > 0) {
+          showError(
+            `Rendered ${sprites.length} stimuli, but ${failures} image file(s) failed to load.\nCheck your image folder paths in getImagePath().`
+          );
+        }
+
+        updateLegend();
+        updateTitleOverlay();
+        renderVectors();
+      }
+
+      function updateSpriteSizes() {
+        const spriteSize = Number(sizeSlider.value);
+        for (const s of sprites) {
+          s.scale.set(spriteSize, spriteSize, spriteSize);
+        }
+      }
+
+      async function loadData() {
+        clearError();
+        clearSprites();
+        clearVectorGroup();
+
+        const jsonPath = getJsonPath();
+        const vectorJsonPath = getVectorJsonPath();
+
+        try {
+          const [mdsResponse, vectorResponse] = await Promise.all([
+            fetch(jsonPath),
+            fetch(vectorJsonPath)
+          ]);
+
+          if (!mdsResponse.ok) {
+            throw new Error(`Could not load ${jsonPath} (status ${mdsResponse.status})`);
+          }
+
+          if (!vectorResponse.ok) {
+            throw new Error(`Could not load ${vectorJsonPath} (status ${vectorResponse.status})`);
+          }
+
+          allData = await mdsResponse.json();
+          allVectorFits = await vectorResponse.json();
+
+          if (!Array.isArray(allData) || allData.length === 0) {
+            throw new Error(`Loaded file is empty or not a valid array: ${jsonPath}`);
+          }
+
+          if (!Array.isArray(allVectorFits)) {
+            throw new Error(`Loaded vector fit file is not a valid array: ${vectorJsonPath}`);
+          }
+
+          updateTitleOverlay();
+          updateColorByOptions();
+          updateLegend();
+
+          await renderCluster(clusterSelect.value);
+
+        } catch (err) {
+          showError("Data loading error:\n" + err.message);
+        }
+      }
+
+      // =========================================================
+      // Toggle behavior
+      // =========================================================
+      toggleAxes.addEventListener("change", () => {
+        axisGroup.visible = toggleAxes.checked;
+      });
+
+      toggleGrid.addEventListener("change", () => {
+        gridHelper.visible = toggleGrid.checked;
+      });
+
+      togglePlanes.addEventListener("change", () => {
+        planeGroup.visible = togglePlanes.checked;
+      });
+
+      toggleVectors.addEventListener("change", () => {
+        renderVectors();
+      });
+
+      toggleAutoRotate.addEventListener("change", () => {
+        autoRotateEnabled = toggleAutoRotate.checked;
+      });
+
+      // =========================================================
+      // Selection behavior
+      // =========================================================
+      experimentSelect.addEventListener("change", async () => {
+        updateTitleOverlay();
+        updateColorByOptions();
+        updateLegend();
+        await loadData();
+      });
+
+      conditionSelect.addEventListener("change", async () => {
+        updateTitleOverlay();
+        await loadData();
+      });
+
+      clusterSelect.addEventListener("change", async () => {
+        updateTitleOverlay();
+        await renderCluster(clusterSelect.value);
+      });
+
+      colorBySelect.addEventListener("change", async () => {
+        updateLegend();
+        await renderCluster(clusterSelect.value);
+      });
+
+      sizeSlider.addEventListener("input", () => {
+        updateSpriteSizes();
+      });
+
+      introButton.addEventListener("click", () => {
+        introOverlay.style.display = "none";
+      });
+
+      // =========================================================
+      // Hover
+      // =========================================================
+      window.addEventListener("mousemove", (event) => {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(sprites);
+
+        if (intersects.length > 0) {
+          const obj = intersects[0].object;
+          const d = obj.userData;
+          currentHover = obj;
+
+          const exp = d.experiment || getCurrentExperiment();
+
+          const rangeLine = exp === "Exp1"
+            ? `<strong>Angle:</strong> ${d.ang}`
+            : `<strong>Range:</strong> ${d.rng}`;
+
+          tooltip.style.display = "block";
+          tooltip.style.left = `${event.clientX + 12}px`;
+          tooltip.style.top = `${event.clientY + 12}px`;
+
+          tooltip.innerHTML = `
+            <div><strong>Number of Vertices:</strong> ${d.nv}</div>
+            <div>${rangeLine}</div>
+            <div><strong>Smoothness:</strong> ${d.sm}</div>
+          `;
+        } else {
+          currentHover = null;
+          tooltip.style.display = "none";
+        }
+      });
+
+      // =========================================================
+      // Resize
+      // =========================================================
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        controls.handleResize();
+      });
+
+      // =========================================================
+      // Animation
+      // =========================================================
+      function animate() {
+        requestAnimationFrame(animate);
+
+        if (autoRotateEnabled) {
+          const target = controls.target;
+          const offset = camera.position.clone().sub(target);
+          const localUp = new THREE.Vector3(0, 1, 0)
+            .applyQuaternion(camera.quaternion)
+            .normalize();
+
+          const angle = -0.003;
+          offset.applyAxisAngle(localUp, angle);
+
+          camera.position.copy(target.clone().add(offset));
+          camera.lookAt(target);
+        }
+
+        controls.update();
+        renderer.render(scene, camera);
+      }
+
+      // =========================================================
+      // Init
+      // =========================================================
+      updateTitleOverlay();
+      updateColorByOptions();
+      updateLegend();
+
+      loadData();
+      animate();
+
+    } catch (err) {
+      showError("Script error:\n" + err.message);
+    }
+  </script>
+</body>
+</html>

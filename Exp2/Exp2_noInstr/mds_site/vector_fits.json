@@ -1,0 +1,74 @@
+[
+  {
+    "experiment": "Exp2",
+    "condition": "noInstr",
+    "cluster": "1",
+    "feature": "sm",
+    "feature_label": "Smoothness",
+    "D1": -0.4756,
+    "D2": -0.8253,
+    "D3": -0.3044,
+    "r2": 0.0282,
+    "pval": 0.879
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "noInstr",
+    "cluster": "1",
+    "feature": "nv",
+    "feature_label": "NV",
+    "D1": 0.5307,
+    "D2": -0.0936,
+    "D3": -0.8423,
+    "r2": 0.8495,
+    "pval": 0.001
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "noInstr",
+    "cluster": "1",
+    "feature": "rng",
+    "feature_label": "Range",
+    "D1": 0.5621,
+    "D2": 0.3787,
+    "D3": 0.7352,
+    "r2": 0.7135,
+    "pval": 0.001
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "noInstr",
+    "cluster": "2",
+    "feature": "sm",
+    "feature_label": "Smoothness",
+    "D1": 0.9197,
+    "D2": 0.0873,
+    "D3": 0.3828,
+    "r2": 0.8789,
+    "pval": 0.001
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "noInstr",
+    "cluster": "2",
+    "feature": "nv",
+    "feature_label": "NV",
+    "D1": 0.3921,
+    "D2": -0.798,
+    "D3": -0.4576,
+    "r2": 0.4336,
+    "pval": 0.005
+  },
+  {
+    "experiment": "Exp2",
+    "condition": "noInstr",
+    "cluster": "2",
+    "feature": "rng",
+    "feature_label": "Range",
+    "D1": 0.0374,
+    "D2": -0.3417,
+    "D3": -0.9391,
+    "r2": 0.3147,
+    "pval": 0.036
+  }
+]

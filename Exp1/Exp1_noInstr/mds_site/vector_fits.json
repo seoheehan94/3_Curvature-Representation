@@ -1,0 +1,74 @@
+[
+  {
+    "experiment": "Exp1",
+    "condition": "noInstr",
+    "cluster": "1",
+    "feature": "sm",
+    "feature_label": "Smoothness",
+    "D1": -0.9404,
+    "D2": 0.1074,
+    "D3": -0.3227,
+    "r2": 0.0135,
+    "pval": 0.942
+  },
+  {
+    "experiment": "Exp1",
+    "condition": "noInstr",
+    "cluster": "1",
+    "feature": "nv",
+    "feature_label": "NV",
+    "D1": -0.1477,
+    "D2": -0.9883,
+    "D3": -0.0392,
+    "r2": 0.9462,
+    "pval": 0.001
+  },
+  {
+    "experiment": "Exp1",
+    "condition": "noInstr",
+    "cluster": "1",
+    "feature": "ang",
+    "feature_label": "Angle",
+    "D1": 0.8996,
+    "D2": -0.2758,
+    "D3": 0.3387,
+    "r2": 0.4933,
+    "pval": 0.002
+  },
+  {
+    "experiment": "Exp1",
+    "condition": "noInstr",
+    "cluster": "2",
+    "feature": "sm",
+    "feature_label": "Smoothness",
+    "D1": -0.8156,
+    "D2": 0.5376,
+    "D3": -0.2141,
+    "r2": 0.0583,
+    "pval": 0.699
+  },
+  {
+    "experiment": "Exp1",
+    "condition": "noInstr",
+    "cluster": "2",
+    "feature": "nv",
+    "feature_label": "NV",
+    "D1": -0.7028,
+    "D2": -0.4,
+    "D3": -0.5883,
+    "r2": 0.0617,
+    "pval": 0.663
+  },
+  {
+    "experiment": "Exp1",
+    "condition": "noInstr",
+    "cluster": "2",
+    "feature": "ang",
+    "feature_label": "Angle",
+    "D1": -0.0967,
+    "D2": -0.9659,
+    "D3": 0.2402,
+    "r2": 0.1668,
+    "pval": 0.254
+  }
+]

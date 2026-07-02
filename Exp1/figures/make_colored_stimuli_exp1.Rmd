@@ -1,0 +1,206 @@
+---
+title: "Exp2_Curvature_Analysis"
+output: html_document
+date: "2026-03-10"
+---
+
+```{r setup, include=FALSE}
+```
+
+
+```{r}
+# =========================================================
+# make_colored_stimuli_exp1.R
+#
+# Creates colored versions of Exp1 transparent stimulus PNGs
+# based on their feature values.
+#
+# PLACE THIS SCRIPT IN:
+#   ROP_Curvature/Exp1/figures/
+#
+# INPUT:
+#   stimuli/
+#
+# OUTPUT:
+#   stimuli_colored/nv/
+#   stimuli_colored/ang/
+#   stimuli_colored/sm/
+#
+# Expected filename pattern:
+#   stim_nv1_ang45_s0.0_rot+000.png
+#   stim_nv2_ang90_s0.8_rot-045.png
+#   stim_nv3_ang135_s1.4_rot+135.png
+#
+# Note:
+#   Exp1 image filenames encode smoothness as:
+#     s0.0 -> sm0
+#     s0.8 -> sm1
+#     s1.4 -> sm2
+#
+# =========================================================
+
+suppressPackageStartupMessages({
+  library(magick)
+  library(stringr)
+  library(fs)
+})
+
+# -----------------------------
+# PATHS
+# -----------------------------
+input_dir  <- "stimuli"
+output_dir <- "stimuli_colored"
+
+output_nv_dir  <- file.path(output_dir, "nv")
+output_ang_dir <- file.path(output_dir, "ang")
+output_sm_dir  <- file.path(output_dir, "sm")
+
+dir_create(output_nv_dir, recurse = TRUE)
+dir_create(output_ang_dir, recurse = TRUE)
+dir_create(output_sm_dir, recurse = TRUE)
+
+# -----------------------------
+# FIXED COLOR MAPS
+# -----------------------------
+nv_colors <- c(
+  `1` = "#4E79A7",
+  `2` = "#F28E2B",
+  `3` = "#59A14F"
+)
+
+ang_colors <- c(
+  `45`  = "#4E79A7",
+  `90`  = "#F28E2B",
+  `135` = "#59A14F"
+)
+
+sm_colors <- c(
+  `0` = "#4E79A7",
+  `1` = "#F28E2B",
+  `2` = "#59A14F"
+)
+
+# -----------------------------
+# HELPER: map filename smoothness code to sm level
+# -----------------------------
+map_s_value_to_sm <- function(s_val) {
+  if (s_val == "0.0") return("0")
+  if (s_val == "0.8") return("1")
+  if (s_val == "1.4") return("2")
+  return(NA_character_)
+}
+
+# -----------------------------
+# HELPER: parse filename
+# -----------------------------
+parse_features_from_filename <- function(filename) {
+  # Examples:
+  # stim_nv1_ang45_s0.0_rot+000.png
+  # stim_nv2_ang90_s0.8_rot-045.png
+  # stim_nv3_ang135_s1.4_rot+135.png
+
+  pattern <- "^stim_nv([0-9]+)_ang([0-9]+)_s([0-9]+\\.[0-9]+)_rot[+-][0-9]{3}\\.png$"
+  m <- str_match(filename, pattern)
+
+  if (all(is.na(m))) {
+    return(NULL)
+  }
+
+  s_raw <- m[4]
+  sm <- map_s_value_to_sm(s_raw)
+
+  if (is.na(sm)) {
+    return(NULL)
+  }
+
+  list(
+    nv    = m[2],
+    ang   = m[3],
+    s_raw = s_raw,
+    sm    = sm
+  )
+}
+
+# -----------------------------
+# HELPER: recolor PNG while preserving alpha
+# -----------------------------
+recolor_png_keep_alpha <- function(input_path, output_path, fill_color) {
+  img <- image_read(input_path)
+
+  info <- image_info(img)
+  width <- info$width[1]
+  height <- info$height[1]
+
+  solid <- image_blank(width = width, height = height, color = fill_color)
+
+  alpha <- image_fx(img, expression = "a")
+
+  colored <- image_composite(solid, alpha, operator = "copyopacity")
+
+  image_write(colored, path = output_path, format = "png")
+}
+
+# -----------------------------
+# GET FILES
+# -----------------------------
+files <- dir_ls(input_dir, regexp = "\\.png$", type = "file")
+
+if (length(files) == 0) {
+  stop("No PNG files found in: ", normalizePath(input_dir, winslash = "/", mustWork = FALSE))
+}
+
+cat("Found", length(files), "PNG files in", normalizePath(input_dir, winslash = "/", mustWork = FALSE), "\n")
+
+# -----------------------------
+# PROCESS FILES
+# -----------------------------
+n_done <- 0
+n_skipped <- 0
+
+for (input_path in files) {
+  filename <- path_file(input_path)
+  parsed <- parse_features_from_filename(filename)
+
+  if (is.null(parsed)) {
+    message("Skipping file with unexpected name format: ", filename)
+    n_skipped <- n_skipped + 1
+    next
+  }
+
+  nv_val  <- parsed$nv
+  ang_val <- parsed$ang
+  sm_val  <- parsed$sm
+
+  nv_color  <- nv_colors[[nv_val]]
+  ang_color <- ang_colors[[ang_val]]
+  sm_color  <- sm_colors[[sm_val]]
+
+  if (is.null(nv_color) || is.null(ang_color) || is.null(sm_color)) {
+    message("Skipping file with unmapped feature value: ", filename)
+    n_skipped <- n_skipped + 1
+    next
+  }
+
+  out_nv  <- file.path(output_nv_dir, filename)
+  out_ang <- file.path(output_ang_dir, filename)
+  out_sm  <- file.path(output_sm_dir, filename)
+
+  recolor_png_keep_alpha(input_path, out_nv,  nv_color)
+  recolor_png_keep_alpha(input_path, out_ang, ang_color)
+  recolor_png_keep_alpha(input_path, out_sm,  sm_color)
+
+  n_done <- n_done + 1
+}
+
+# -----------------------------
+# SUMMARY
+# -----------------------------
+cat("\nDone.\n")
+cat("Processed:", n_done, "files\n")
+cat("Skipped:", n_skipped, "files\n")
+cat("\nCreated folders:\n")
+cat(" -", normalizePath(output_nv_dir, winslash = "/", mustWork = FALSE), "\n")
+cat(" -", normalizePath(output_ang_dir, winslash = "/", mustWork = FALSE), "\n")
+cat(" -", normalizePath(output_sm_dir, winslash = "/", mustWork = FALSE), "\n")
+```
+
