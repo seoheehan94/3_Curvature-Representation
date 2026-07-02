@@ -1,0 +1,1329 @@
+---
+title: "Pilot_17_OOO_Analysis"
+output: html_document
+date: "2025-12-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning = FALSE}
+library(readr)
+library(tidyverse)
+library(stringr)
+library(survival)
+library(lme4)
+library(tidyr)
+
+library(broom)
+library(dplyr)
+library(ggplot2)
+
+library(vegan)
+```
+
+```{r, echo = FALSE}
+df1 <- read_csv("Han_curvRep1D_135373_SESSION_2025-12-05_15h44.11.905.csv")
+df2 <- read_csv("Han_curvRep1D_202295_SESSION_2025-12-03_23h17.34.494.csv")
+df3 <- read_csv("Han_curvRep1D_241598_SESSION_2025-12-05_23h58.47.45.csv")
+df4 <- read_csv("Han_curvRep1D_273589_SESSION_2025-12-04_16h19.53.591.csv")
+df5 <- read_csv("Han_curvRep1D_346311_SESSION_2025-12-05_21h47.10.211.csv")
+df6 <- read_csv("Han_curvRep1D_380418_SESSION_2025-12-05_22h47.42.192.csv")
+df7 <- read_csv("Han_curvRep1D_411219_SESSION_2025-12-05_03h29.35.845.csv")
+df8 <- read_csv("Han_curvRep1D_513908_SESSION_2025-12-02_12h24.20.787.csv")
+df9 <- read_csv("Han_curvRep1D_645088_SESSION_2025-12-05_21h04.09.161.csv")
+df10 <- read_csv("Han_curvRep1D_712067_SESSION_2025-12-01_20h26.13.788.csv")
+df11 <- read_csv("Han_curvRep1D_720702_SESSION_2025-12-03_12h06.17.516.csv")
+df12 <- read_csv("Han_curvRep1D_770450_SESSION_2025-12-02_18h03.42.69.csv")
+df13 <- read_csv("Han_curvRep1D_797896_SESSION_2025-12-04_18h55.19.676.csv")
+df14 <- read_csv("Han_curvRep1D_879809_SESSION_2025-12-04_23h05.25.59.csv")
+df15 <- read_csv("Han_curvRep1D_909758_SESSION_2025-12-04_21h23.15.701.csv")
+df16 <- read_csv("Han_curvRep1D_913438_SESSION_2025-12-05_20h58.37.81.csv")
+df17 <- read_csv("Han_curvRep1D_967429_SESSION_2025-11-27_22h18.59.884.csv")
+
+```
+
+
+
+```{r}
+library(readr)
+library(tidyverse)
+
+# filenames in a vector
+files <- c(
+  "Han_curvRep1D_135373_SESSION_2025-12-05_15h44.11.905.csv",
+  "Han_curvRep1D_202295_SESSION_2025-12-03_23h17.34.494.csv",
+  "Han_curvRep1D_241598_SESSION_2025-12-05_23h58.47.45.csv",
+  "Han_curvRep1D_273589_SESSION_2025-12-04_16h19.53.591.csv",
+  "Han_curvRep1D_346311_SESSION_2025-12-05_21h47.10.211.csv",
+  "Han_curvRep1D_380418_SESSION_2025-12-05_22h47.42.192.csv",
+  "Han_curvRep1D_411219_SESSION_2025-12-05_03h29.35.845.csv",
+  "Han_curvRep1D_513908_SESSION_2025-12-02_12h24.20.787.csv",
+  "Han_curvRep1D_645088_SESSION_2025-12-05_21h04.09.161.csv",
+  "Han_curvRep1D_712067_SESSION_2025-12-01_20h26.13.788.csv",
+  "Han_curvRep1D_720702_SESSION_2025-12-03_12h06.17.516.csv",
+  "Han_curvRep1D_770450_SESSION_2025-12-02_18h03.42.69.csv",
+  "Han_curvRep1D_797896_SESSION_2025-12-04_18h55.19.676.csv",
+  "Han_curvRep1D_879809_SESSION_2025-12-04_23h05.25.59.csv",
+  "Han_curvRep1D_909758_SESSION_2025-12-04_21h23.15.701.csv",
+  "Han_curvRep1D_913438_SESSION_2025-12-05_20h58.37.81.csv",
+  "Han_curvRep1D_967429_SESSION_2025-11-27_22h18.59.884.csv"
+)
+
+df_raw_all <- map_dfr(files, function(f) {
+  read_csv(f, 
+           col_types = cols(rt = col_double(), 
+                            response = col_character(), 
+                            correct_response = col_character(), 
+                            correct = col_logical(), 
+                            block_failed = col_logical(), 
+                            blocks_failed_total = col_double(), 
+                            .default = col_guess()),
+           na = c("", "NA", "null", "NaN")) %>%
+    mutate(
+      file = basename(f),
+      subj_id = str_match(file, "Han_curvRep1D_(\\d+)_SESSION")[,2]
+    )
+})
+
+```
+
+
+```{r}
+df_raw_all %>% count(subj_id, trial_kind) %>% arrange(subj_id, desc(n)) %>% filter(trial_kind == "exp_221" | trial_kind == "exp_111")
+
+# in experiment design code, when generating all the possible triplets of the patterns 2/2/2 and 2/1/1, there should have been 324 exp_222 and 216 exp_111. so 540 total, and all these triplets should be used. All participants see the same 540 triplets, since these are all the combinations possible with those patterns. 
+# But instead of 216 exp_111, there were 270 total. (54 more that should not be included, that were the 111 triplets that hold one dimension fixed). 
+# so when we subsample 540 of them after shuffling, it takes the first 540 of the 594 total possible triplets. this means that the number of exp_221 and exp_111 trials are not constant between participants. 
+# participants don't all see all the same triplets 
+```
+
+```{r}
+# catch trial accuracy for practice trials
+df_raw_all %>%
+  filter(trial_kind == "practice_catch") %>%
+  group_by(subj_id) %>%
+  summarise(
+    n_practice_catch = n(),
+    n_correct = sum(correct == TRUE, na.rm = TRUE),
+    acc = mean(correct == TRUE, na.rm = TRUE)
+  )
+
+# catch trial accuracy for main trials
+main_catch <- df_raw_all %>%
+  filter(trial_kind == "catch")
+
+main_catch %>%
+  group_by(subj_id) %>%
+  summarise(
+    n_catch = n(),
+    n_correct = sum(correct == TRUE, na.rm = TRUE),
+    accuracy = mean(correct == TRUE, na.rm = TRUE))
+```
+```{r}
+# each participant must get 80% catch trial accuracy min in each block to pass that block
+block_catch_summary <- df_raw_all %>%
+  filter(trial_kind == "catch") %>%
+  group_by(subj_id, block_index) %>%
+  summarise(
+    n_catch = n(),
+    n_correct = sum(correct == TRUE, na.rm = TRUE),
+    acc = n_correct / n_catch,
+    block_failed_80 = acc < 0.80,
+    .groups = "drop"
+  )
+block_catch_summary %>% filter(block_failed_80 == TRUE) 
+
+df_raw_all %>%
+  filter(trial_kind == "block_feedback") %>%
+  select(subj_id, block_index, block_failed, blocks_failed_total)
+
+# no one failed any blocks 
+```
+
+```{r}
+# Checking the RT warnings (= RTs faster than 500)
+rt_warnings <- df_raw_all %>%
+  filter(trial_kind == "rt_warning") %>%
+  count(subj_id)
+rt_warnings
+
+df_raw_all %>%
+  filter(rt < 500) %>% 
+  select(participant, rt, block_index, trial_in_block, trial_kind)
+```
+```{r}
+# clean the table. drop too fast trials and only keep exp221 and exp111
+RT_MIN_MS <- 500
+df_trials <- df_raw_all %>%
+  filter(
+    trial_kind %in% c("exp_221", "exp_111"),
+    is_practice == FALSE,
+    is_catch == FALSE,
+    rt >= RT_MIN_MS
+  )
+
+# each row = one item in the triad. 
+df_items <- df_trials %>%
+  group_by(subj_id) %>%
+  mutate(triad_id = row_number()) %>%
+  ungroup() %>%
+  select(
+    subj_id, triad_id, chosen_index,
+    stim_left, stim_middle, stim_right
+  ) %>%
+  pivot_longer(
+    cols = c(stim_left, stim_middle, stim_right),
+    names_to = "position",
+    values_to = "stim_path"
+  ) %>%
+  mutate(
+    pos_index = case_when(
+      position == "stim_left"   ~ 0L,
+      position == "stim_middle" ~ 1L,
+      position == "stim_right"  ~ 2L
+    ),
+    is_chosen = pos_index == chosen_index,
+    nv   = as.integer(str_match(stim_path, "stim_nv(\\d+)_")[,2]),
+    ang  = as.integer(str_match(stim_path, "ang(\\d+)_curv")[,2]),
+    curv = as.integer(str_match(stim_path, "curv(\\d+)_rot")[,2])
+  )
+
+head(df_items)
+```
+
+
+
+```{r}
+library(dplyr)
+
+items_short <- df_items %>%
+  select(subj_id, triad_id, pos_index, is_chosen, curv, nv, ang)
+
+pairs <- df_items %>%
+  select(subj_id, triad_id, pos_index, is_chosen, curv, nv, ang) %>%
+  inner_join(items_short, by = c("subj_id", "triad_id"), suffix = c("_i", "_j")) %>%
+  filter(pos_index_i < pos_index_j) %>%
+  arrange(subj_id, triad_id, pos_index_i, pos_index_j) %>%
+  group_by(subj_id, triad_id) %>%
+  mutate(
+    pair_in_triad = row_number(),
+    trial_id = cur_group_id() 
+  ) %>%
+  ungroup() %>%
+  transmute(
+    subj_id,
+    triad_id,
+    pair_in_triad,
+    curv_i = curv_i, nv_i = nv_i, ang_i = ang_i,
+    curv_j = curv_j, nv_j = nv_j, ang_j = ang_j,
+    chosen_i = is_chosen_i,
+    chosen_j = is_chosen_j,
+    same_curv  = as.integer(curv_i == curv_j),
+    same_vert  = as.integer(nv_i   == nv_j),
+    same_angle = as.integer(ang_i  == ang_j),
+    co_group   = as.integer(!chosen_i & !chosen_j),
+    diff_curv  = as.factor(abs(curv_i - curv_j)),
+    diff_nv    = as.factor(abs(nv_i   - nv_j)),
+    diff_ang   = as.factor(abs(ang_i  - ang_j)),
+    trial_id
+  )
+
+head(pairs)
+
+# exactly 3 pairs per triad
+pairs %>%
+  count(subj_id, triad_id) %>%
+  count(n)
+
+# co_group exactly 1 per triad
+pairs %>%
+  group_by(subj_id, triad_id) %>%
+  summarise(n_co = sum(co_group), .groups="drop") %>%
+  count(n_co)
+
+```
+```{r}
+library(lme4)
+
+model1 <- glmer(
+  co_group ~ same_curv + same_vert + same_angle +
+    (1 | subj_id),
+  data = pairs,
+  family = binomial,
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e5)
+  )
+)
+
+summary(model1)
+fixef(model1)        # log-odds
+exp(fixef(model1))  # odds ratios
+
+
+```
+```{r}
+contrasts(pairs$diff_curv) <- contr.sum(nlevels(pairs$diff_curv))
+contrasts(pairs$diff_nv)   <- contr.sum(nlevels(pairs$diff_nv))
+contrasts(pairs$diff_ang)  <- contr.sum(nlevels(pairs$diff_ang))
+
+m_dist <- glmer(
+  co_group ~ diff_curv + diff_nv + diff_ang +
+    (1 | subj_id),
+  data = pairs,
+  family = binomial,
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e5)
+  )
+)
+
+summary(m_dist)
+
+```
+```{r}
+contrasts(pairs$diff_curv)
+contrasts(pairs$diff_nv)
+contrasts(pairs$diff_ang)
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# 1) Start from df_items and add chosen as 0/1
+df_long <- df_items %>%
+  mutate(chosen = as.integer(is_chosen))
+
+# 2) Build all within-triad pairs (i != j), compute pairwise diffs, then sum them per focal item i
+pairs2 <- df_long %>%
+  select(subj_id, triad_id, pos_index, nv, ang, curv) %>%
+  rename(i = pos_index,
+         nv_i = nv, ang_i = ang, curv_i = curv) %>%
+  inner_join(
+    df_long %>%
+      select(subj_id, triad_id, pos_index, nv, ang, curv) %>%
+      rename(j = pos_index,
+             nv_j = nv, ang_j = ang, curv_j = curv),
+    by = c("subj_id", "triad_id")
+  ) %>%
+  filter(i != j) %>%
+  mutate(
+    d_nv   = abs(nv_i   - nv_j),
+    d_curv = abs(curv_i - curv_j),
+
+    # circular angle distance for 180°-periodic orientations:
+    # min(|a-b|, 180-|a-b|)
+    d_ang  = pmin(abs(ang_i - ang_j), 180 - abs(ang_i - ang_j))
+  ) %>%
+  group_by(subj_id, triad_id, i) %>%
+  summarise(
+    diff_nv   = sum(d_nv),
+    diff_curv = sum(d_curv),
+    diff_ang  = sum(d_ang),
+    .groups = "drop"
+  )
+
+df_long <- df_long %>%
+  left_join(
+    pairs2 %>% rename(pos_index = i),
+    by = c("subj_id", "triad_id", "pos_index")
+  )
+
+
+library(nnet)
+
+m_main <- multinom(chosen ~ diff_curv + diff_nv + diff_ang, data = df_long)
+
+summary(m_main)
+
+```
+
+Multinomial Logistic 
+
+```{r}
+library(dplyr)
+library(mlogit)
+
+pairs2 <- pairs %>%
+  mutate(
+    chid   = interaction(subj_id, triad_id, drop = TRUE),  
+    alt    = factor(pair_in_triad),
+    choice = as.integer(co_group == 1)
+  ) %>%
+  distinct(chid, alt, .keep_all = TRUE) 
+
+pairs2_df <- pairs2 %>%
+  mutate(
+    chid = as.character(chid),
+    alt  = as.character(alt)
+  ) %>%
+  arrange(chid, alt)
+
+pairs2_df <- as.data.frame(pairs2_df)
+
+ml_dat <- mlogit.data(
+  data     = pairs2_df,
+  choice   = "choice",
+  shape    = "long",
+  chid.var = "chid",
+  alt.var  = "alt",
+  id.var   = "subj_id",
+  panel    = TRUE
+)
+
+mA1_dist <- mlogit(choice ~ diff_curv + diff_nv + diff_ang | 0, data = ml_dat)
+summary(mA1_dist)
+
+```
+
+Binary Logistic 
+
+```{r}
+library(lme4)
+
+m_4 <- glmer(
+  co_group ~ same_curv + same_vert + same_angle +
+    (1 | subj_id) +
+    (1 | subj_id:triad_id),
+  data = pairs,
+  family = binomial,
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e5)
+  )
+)
+
+m_5 <- glmer(
+  co_group ~ diff_curv + diff_nv + diff_ang +
+    (1 | subj_id) +
+    (1 | subj_id:triad_id),
+  data = pairs,
+  family = binomial,
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(maxfun = 2e5)
+  )
+)
+
+summary(m_4)
+summary(m_5)
+
+```
+
+
+
+RDM ANALYSIS 
+
+```{r}
+stim_lookup <- pairs %>%
+  select(curv = curv_i, nv = nv_i, ang = ang_i) %>%
+  bind_rows(pairs %>% select(curv = curv_j, nv = nv_j, ang = ang_j)) %>%
+  distinct(curv, nv, ang) %>%
+  arrange(curv, nv, ang) %>%
+  mutate(stim_id = row_number())
+
+stopifnot(nrow(stim_lookup) == 27)
+
+pairs_id <- pairs %>%
+  left_join(stim_lookup, by = c("curv_i"="curv", "nv_i"="nv", "ang_i"="ang")) %>%
+  rename(id_i = stim_id) %>%
+  left_join(stim_lookup, by = c("curv_j"="curv", "nv_j"="nv", "ang_j"="ang")) %>%
+  rename(id_j = stim_id) %>%
+  mutate(
+    low  = pmin(id_i, id_j),
+    high = pmax(id_i, id_j) # so that (i,j) and (j,i) become the same pair
+  )
+
+```
+
+```{r}
+# for each subject, S = n_win/n_appear
+S_subj <- pairs_id %>%
+  group_by(subj_id, low, high) %>%
+  summarise(
+    n_appear = n(),
+    n_win    = sum(co_group),
+    S        = n_win / n_appear,
+    .groups = "drop"
+  )
+
+# average across 17 subjects
+S_avg <- S_subj %>%
+  group_by(low, high) %>%
+  summarise(
+    S_mean = mean(S, na.rm = TRUE),
+    S_sd   = sd(S, na.rm = TRUE),
+    S_se   = S_sd / sqrt(n()),
+    n_subj = n(),
+    .groups = "drop"
+  )
+
+```
+
+```{r}
+n_items <- 27
+
+Sbar <- matrix(NA_real_, nrow = n_items, ncol = n_items)
+rownames(Sbar) <- colnames(Sbar) <- as.character(1:n_items)
+
+# fill off-diagonals
+for (k in seq_len(nrow(S_avg))) {
+  i <- S_avg$low[k]
+  j <- S_avg$high[k]
+  Sbar[i, j] <- S_avg$S_mean[k]
+  Sbar[j, i] <- S_avg$S_mean[k]
+}
+
+diag(Sbar) <- 1
+
+Dbar <- 1 - Sbar
+diag(Dbar) <- 0
+```
+
+```{r}
+S_avg %>% count(n_subj) %>% arrange(n_subj) # n_subj = 17 for all 243 pairs
+
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+### SIMILARITY MATRIX HEATMAP
+
+Sbar_long <- as_tibble(Sbar, .name_repair = "minimal") %>%
+  mutate(id_i = row_number()) %>%
+  pivot_longer(
+    cols = -id_i,
+    names_to = "id_j",
+    values_to = "S"
+  ) %>%
+  mutate(
+    id_i = as.integer(id_i),
+    id_j = as.integer(id_j))
+
+# make sure it's ordered by curv, nv, ang
+stim_order <- stim_lookup %>%
+  arrange(curv, nv, ang) %>%
+  pull(stim_id)
+Sbar_long <- Sbar_long %>%
+  mutate(
+    id_i = factor(id_i, levels = stim_order),
+    id_j = factor(id_j, levels = stim_order))
+
+ggplot(Sbar_long, aes(x = id_i, y = id_j, fill = S)) +
+  geom_tile() +
+  scale_fill_viridis_c(limits = c(0, 1), name = "Similarity", na.value = "grey90") +
+  coord_equal() +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Stimulus",
+    y = "Stimulus",
+    title = "Average similarity matrix (S̄)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  )
+
+
+### DISSIMILARITY MATRIX HEATMAP
+
+Dbar_long <- as_tibble(Dbar, .name_repair = "minimal") %>%
+  mutate(id_i = row_number()) %>%
+  pivot_longer(
+    cols = -id_i,
+    names_to = "id_j",
+    values_to = "D"
+  ) %>%
+  mutate(
+    id_i = as.integer(id_i),
+    id_j = as.integer(id_j)
+  ) %>%
+  mutate(
+    id_i = factor(id_i, levels = stim_order),
+    id_j = factor(id_j, levels = stim_order)
+  )
+
+ggplot(Dbar_long, aes(x = id_i, y = id_j, fill = D)) +
+  geom_tile() +
+  scale_fill_viridis_c(
+    limits = c(0, 1),
+    name = "Dissimilarity",
+    na.value = "grey90"
+  ) +
+  coord_equal() +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "Stimulus",
+    y = "Stimulus",
+    title = "Average dissimilarity matrix (D̄ = 1 − S̄)"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  )
+
+```
+
+```{r}
+# D̄ = 1 - S̄
+Dbar <- 1 - Sbar
+diag(Dbar) <- 0
+
+Sbar_long <- as_tibble(Sbar, .name_repair = "minimal") %>%
+  mutate(id_i = row_number()) %>%
+  pivot_longer(cols = -id_i, names_to = "id_j", values_to = "val") %>%
+  mutate(id_j = as.integer(id_j), metric = "Similarity")
+
+Dbar_long <- as_tibble(Dbar, .name_repair = "minimal") %>%
+  mutate(id_i = row_number()) %>%
+  pivot_longer(cols = -id_i, names_to = "id_j", values_to = "val") %>%
+  mutate(id_j = as.integer(id_j), metric = "Dissimilarity")
+
+plot_long <- bind_rows(Sbar_long, Dbar_long)
+
+# curv blocks: 1–9, 10–18, 19–27
+curv_blocks <- tibble(
+  curv  = c(0, 1, 2),
+  start = c(1, 10, 19),
+  end   = c(9, 18, 27),
+  mid   = c(5, 14, 23),
+  label = c("curv 0", "curv 1", "curv 2")
+)
+
+# nv blocks inside each curv block: n1=(1–3), n2=(4–6), n3=(7–9) (offset by curv*9)
+nv_blocks <- tidyr::expand_grid(curv = c(0,1,2), nv = c(1,2,3)) %>%
+  mutate(
+    start = (curv*9) + (nv-1)*3 + 1,
+    end   = start + 2,
+    mid   = (start + end)/2,
+    label = paste0("n", nv)
+  )
+
+# angle labels (per nv block): columns are [45,90,135] in each 3-wide chunk
+ang_labs <- tibble(ang = c(45, 90, 135), offset = c(0,1,2), lab = c("a45","a90","a135"))
+ang_positions <- nv_blocks %>%
+  select(curv, nv, start) %>%
+  tidyr::crossing(ang_labs) %>%
+  mutate(x = start + offset, y = 0.4)  # y will be used for top annotations
+
+
+# curv blocks: 1–9, 10–18, 19–27
+curv_blocks <- tibble(
+  curv  = c(0, 1, 2),
+  start = c(1, 10, 19),
+  end   = c(9, 18, 27),
+  mid   = c(5, 14, 23),
+  label = c("curv 0", "curv 1", "curv 2")
+)
+
+# nv blocks inside each curv block: n1=(1–3), n2=(4–6), n3=(7–9) (offset by curv*9)
+nv_blocks <- tidyr::expand_grid(curv = c(0,1,2), nv = c(1,2,3)) %>%
+  mutate(
+    start = (curv*9) + (nv-1)*3 + 1,
+    end   = start + 2,
+    mid   = (start + end)/2,
+    label = paste0("n", nv)
+  )
+
+# angle labels (per nv block): columns are [45,90,135] in each 3-wide chunk
+ang_labs <- tibble(ang = c(45, 90, 135), offset = c(0,1,2), lab = c("a45","a90","a135"))
+ang_positions <- nv_blocks %>%
+  select(curv, nv, start) %>%
+  tidyr::crossing(ang_labs) %>%
+  mutate(x = start + offset, y = 0.4)  # y will be used for top annotations
+
+
+plot_matrix <- function(M,
+                        stim_lookup,
+                        value_name = "Similarity",
+                        title = NULL,
+                        limits = c(0, 1),
+                        na_value = "grey90",
+                        palette = "plasma",
+                        show_curv_labels = TRUE,
+                        show_nv_labels = TRUE,
+                        show_ang_right = TRUE,
+                        base_size = 14) {
+
+  stopifnot(is.matrix(M))
+  stopifnot(all(c("curv","nv","ang","stim_id") %in% names(stim_lookup)))
+
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+
+  `%||%` <- function(x, y) if (is.null(x) || length(x) == 0) y else x
+
+  # order: curv -> nv -> ang (matches your stim_lookup)
+  stim_order <- stim_lookup %>%
+    arrange(curv, nv, ang) %>%
+    pull(stim_id)
+
+  N <- length(stim_order)
+  stopifnot(nrow(M) == N, ncol(M) == N)
+
+  # long form matrix
+  M_long <- as_tibble(M, .name_repair = "minimal") %>%
+    mutate(id_i = row_number()) %>%
+    pivot_longer(cols = -id_i, names_to = "id_j", values_to = "val") %>%
+    mutate(
+      id_i = as.integer(id_i),
+      id_j = as.integer(id_j),
+      id_i = factor(id_i, levels = stim_order),
+      id_j = factor(id_j, levels = stim_order)
+    )
+
+  # blocks (hard-coded for 27 = 3*3*3; matches your setup)
+  curv_blocks <- tibble(
+    curv  = c(0, 1, 2),
+    start = c(1, 10, 19),
+    end   = c(9, 18, 27),
+    mid   = c(5, 14, 23),
+    label = c("curv 0", "curv 1", "curv 2")
+  )
+
+  nv_blocks <- tidyr::expand_grid(
+    curv = c(0, 1, 2),
+    nv   = c("n1", "n2", "n3")
+  ) %>%
+    mutate(
+      start_local = case_when(nv == "n1" ~ 1L,
+                              nv == "n2" ~ 4L,
+                              nv == "n3" ~ 7L),
+      end_local   = start_local + 2L,
+      start = start_local + curv*9,
+      end   = end_local   + curv*9,
+      mid   = (start + end)/2
+    )
+
+  # RIGHT-SIDE ANG LABELS: one per row, derived from stim_lookup order
+  # (we label rows, so we use the row ordering: arrange(curv, nv, ang))
+  ang_right <- stim_lookup %>%
+    arrange(curv, nv, ang) %>%
+    transmute(
+      y = stim_id,                 # 1..27 in your lookup
+      label = paste0("a", ang)
+    )
+
+  # palette
+  fill_scale <- scale_fill_viridis_c(
+    option = if (palette == "plasma") "plasma" else "viridis",
+    direction = -1,
+    limits = limits,
+    name = value_name,
+    na.value = na_value
+  )
+
+  # base heatmap (square)
+  p <- ggplot(M_long, aes(x = id_i, y = id_j, fill = val)) +
+    geom_tile() +
+    fill_scale +
+    coord_equal(
+      clip = "off",
+      xlim = c(0.5, N + 0.5),
+      ylim = c(0.5, N + 0.5)
+    ) +
+    theme_minimal(base_size = base_size) +
+    theme(
+      panel.grid  = element_blank(),
+      axis.text   = element_blank(),
+      axis.ticks  = element_blank(),
+      plot.margin = margin(20, 130, 70, 90),  # extra right margin for ang labels
+      aspect.ratio = 1
+    ) +
+    labs(x = NULL, y = NULL, title = title %||% "")
+
+  # separators: curv (thick)
+  for (x in c(9.5, 18.5)) {
+    p <- p +
+      geom_vline(xintercept = x, linewidth = 0.9) +
+      geom_hline(yintercept = x, linewidth = 0.9)
+  }
+
+  # separators: nv within each curv (medium)
+  for (x in c(3.5, 6.5, 12.5, 15.5, 21.5, 24.5)) {
+    p <- p +
+      geom_vline(xintercept = x, linewidth = 0.45, alpha = 0.9) +
+      geom_hline(yintercept = x, linewidth = 0.45, alpha = 0.9)
+  }
+
+  # separators: ang within each nv (thin)
+  thin_lines <- c(
+    1.5,2.5,4.5,5.5,7.5,8.5,
+    10.5,11.5,13.5,14.5,16.5,17.5,
+    19.5,20.5,22.5,23.5,25.5,26.5
+  )
+  for (x in thin_lines) {
+    p <- p +
+      geom_vline(xintercept = x, linewidth = 0.22, alpha = 0.55) +
+      geom_hline(yintercept = x, linewidth = 0.22, alpha = 0.55)
+  }
+
+  # curv labels (bottom)
+  if (show_curv_labels) {
+    p <- p +
+      geom_text(
+        data = curv_blocks,
+        aes(x = mid, y = 0, label = label),
+        inherit.aes = FALSE,
+        vjust = 1.5,
+        size = 5
+      )
+  }
+
+  # nv labels (left)
+  if (show_nv_labels) {
+    p <- p +
+      geom_text(
+        data = nv_blocks,
+        aes(x = 0, y = mid, label = nv),
+        inherit.aes = FALSE,
+        hjust = 1.4,
+        size = 4.2,
+        fontface = "bold"
+      )
+  }
+
+  # ang labels (right) — one per row, small font
+  if (show_ang_right) {
+    p <- p +
+      geom_text(
+        data = ang_right,
+        aes(x = N + 1.2, y = y, label = label),
+        inherit.aes = FALSE,
+        hjust = 0,
+        size = 3.0,
+        alpha = 0.9
+      )
+  }
+
+  p
+}
+
+
+# Similarity heatmap (yellow -> dark blue look)
+pS <- plot_matrix(
+  M = Sbar,
+  stim_lookup = stim_lookup,
+  value_name = "Similarity",
+  title = "Average similarity matrix (S̄)",
+  limits = c(0, 1),
+  palette = "plasma",
+  show_ang_right = TRUE
+)
+pS
+
+Dbar <- 1 - Sbar
+
+pD <- plot_matrix(
+  M = Dbar,
+  stim_lookup = stim_lookup,
+  value_name = "Dissimilarity",
+  title = "Average dissimilarity matrix (D̄)",
+  limits = c(0, 1),
+  palette = "plasma",
+  show_ang_right = TRUE
+)
+
+pD
+
+```
+
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(smacof)
+library(tibble)
+
+# weights
+W <- ifelse(is.na(Dbar), 0, 1)
+
+# replace NA with 0
+D_smacof <- Dbar
+D_smacof[is.na(D_smacof)] <- 0
+
+# Ordinal MDS (2D)
+mds_ordinal <- mds(
+  delta = D_smacof,
+  weightmat = W,
+  type = "ordinal",
+  ndim = 2)
+
+mds_ordinal$stress
+
+# extract coordinates, join data about stimulus
+mds_coords_ord <- as.data.frame(mds_ordinal$conf) %>%
+  rownames_to_column("stim_id") %>%
+  mutate(stim_id = as.integer(stim_id)) %>%
+  left_join(stim_lookup, by = "stim_id")
+
+head(mds_coords_ord)
+
+
+```
+
+
+
+```{r}
+ggplot(mds_coords_ord, aes(x = D1, y = D2, label = stim_id)) +
+  geom_point() +
+  geom_text(vjust = -0.6, size = 3) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Ordinal MDS (from D̄)", x = "Dim 1", y = "Dim 2")
+
+# colored by curv
+ggplot(mds_coords_ord, aes(x = D1, y = D2)) +
+  geom_point(aes(color = factor(curv)), size = 3) +
+  geom_text(aes(label = stim_id), vjust = -0.8, size = 3, show.legend = FALSE) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Ordinal MDS (D̄), colored by curv", x = "Dim 1", y = "Dim 2", color = "curv")
+
+# colored by nv
+ggplot(mds_coords_ord, aes(x = D1, y = D2)) +
+  geom_point(aes(color = factor(nv)), size = 3) +
+  geom_text(aes(label = stim_id), vjust = -0.8, size = 3, show.legend = FALSE) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Ordinal MDS (D̄), colored by nv", x = "Dim 1", y = "Dim 2", color = "nv")
+
+# colored by ang
+ggplot(mds_coords_ord, aes(x = D1, y = D2)) +
+  geom_point(aes(color = factor(ang)), size = 3) +
+  geom_text(aes(label = stim_id), vjust = -0.8, size = 3, show.legend = FALSE) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Ordinal MDS (D̄), colored by ang", x = "Dim 1", y = "Dim 2", color = "ang")
+
+mds_coords_ord %>%
+  select(D1, D2, curv, nv, ang) %>%
+  mutate(across(c(curv, nv, ang), as.numeric)) %>%
+  cor(use = "complete.obs")
+
+```
+
+
+```{r}
+# Ideal Matrices 
+
+ideal_curv <- matrix(0, nrow = 27, ncol = 27)
+ideal_nv <- matrix(0, 27, 27)
+ideal_ang <- matrix(0, 27, 27)
+ideal_additive <- matrix(0, 27, 27)
+
+for (i in 1:27) {
+  for (j in 1:27) {
+    ideal_curv[i, j] <- as.integer(stim_lookup$curv[i] != stim_lookup$curv[j])
+  }
+}
+
+for (i in 1:27) {
+  for (j in 1:27) {
+    ideal_nv[i, j] <- as.integer(stim_lookup$nv[i] != stim_lookup$nv[j])
+  }
+}
+
+for (i in 1:27) {
+  for (j in 1:27) {
+    ideal_ang[i, j] <- as.integer(stim_lookup$ang[i] != stim_lookup$ang[j])
+  }
+}
+
+for (i in 1:27) {
+  for (j in 1:27) {
+    ideal_additive[i, j] <-
+      (stim_lookup$curv[i] != stim_lookup$curv[j]) +
+      (stim_lookup$nv[i]   != stim_lookup$nv[j]) +
+      (stim_lookup$ang[i]  != stim_lookup$ang[j])
+  }
+}
+
+diag(ideal_curv) <- 0
+diag(ideal_nv) <- 0
+diag(ideal_ang) <- 0
+diag(ideal_additive) <- 0
+
+
+```
+
+```{r}
+n_items <- nrow(stim_lookup)
+
+ideal_curv <- matrix(0, n_items, n_items)
+ideal_nv   <- matrix(0, n_items, n_items)
+ideal_ang  <- matrix(0, n_items, n_items)
+ideal_add  <- matrix(0, n_items, n_items)
+
+for (i in 1:n_items) {
+  for (j in 1:n_items) {
+    ideal_curv[i, j] <- as.integer(stim_lookup$curv[i] != stim_lookup$curv[j])
+    ideal_nv[i, j]   <- as.integer(stim_lookup$nv[i]   != stim_lookup$nv[j])
+    ideal_ang[i, j]  <- as.integer(stim_lookup$ang[i]  != stim_lookup$ang[j])
+
+    ideal_add[i, j]  <-
+      (stim_lookup$curv[i] != stim_lookup$curv[j]) +
+      (stim_lookup$nv[i]   != stim_lookup$nv[j]) +
+      (stim_lookup$ang[i]  != stim_lookup$ang[j])
+  }
+}
+
+diag(ideal_curv) <- 0
+diag(ideal_nv)   <- 0
+diag(ideal_ang)  <- 0
+diag(ideal_add)  <- 0
+
+ideal_add01 <- ideal_add / 3
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+stim_order <- stim_lookup %>% arrange(curv, nv, ang) %>% pull(stim_id)
+
+plot_mat <- function(M, title, lims = c(0,1)) {
+  as_tibble(M, .name_repair = "minimal") %>%
+    mutate(id_i = row_number()) %>%
+    pivot_longer(cols = -id_i, names_to = "id_j", values_to = "D") %>%
+    mutate(
+      id_i = factor(as.integer(id_i), levels = stim_order),
+      id_j = factor(as.integer(id_j), levels = stim_order)
+    ) %>%
+    ggplot(aes(id_i, id_j, fill = D)) +
+    geom_tile() +
+    scale_fill_viridis_c(option = "viridis", direction = -1,
+                         limits = lims, name = "Dissimilarity") +
+    coord_equal() +
+    theme_minimal(base_size = 13) +
+    theme(
+      panel.grid = element_blank(),
+      axis.text  = element_blank(),
+      axis.ticks = element_blank()
+    ) +
+    labs(x = NULL, y = NULL, title = title)
+}
+
+colnames(Dbar) <- seq_len(ncol(Dbar))
+colnames(ideal_curv) <- seq_len(ncol(ideal_curv))
+colnames(ideal_nv)   <- seq_len(ncol(ideal_nv))
+colnames(ideal_ang)  <- seq_len(ncol(ideal_ang))
+colnames(ideal_add01) <- seq_len(ncol(ideal_add01))
+
+p_emp   <- plot_mat(Dbar,        "Empirical D̄ (group average)", lims = c(0,1))
+p_curv  <- plot_mat(ideal_curv,  "Ideal D, curv",          lims = c(0,1))
+p_nv    <- plot_mat(ideal_nv,    "Ideal D, nv",            lims = c(0,1))
+p_ang   <- plot_mat(ideal_ang,   "Ideal D, angle",         lims = c(0,1))
+p_add   <- plot_mat(ideal_add01, "Ideal D, all",        lims = c(0,1))
+
+p_emp
+p_curv
+p_nv
+p_ang
+p_add
+```
+```{r}
+# Pearson correlation between ideal matrices and empirical matrix. 
+
+get_rdm_vec <- function(M) {
+  M[upper.tri(M, diag = FALSE)]
+}
+
+v_emp   <- get_rdm_vec(Dbar)
+v_curv  <- get_rdm_vec(ideal_curv)
+v_nv    <- get_rdm_vec(ideal_nv)
+v_ang   <- get_rdm_vec(ideal_ang)
+v_add   <- get_rdm_vec(ideal_add01)
+
+
+ok <- !is.na(v_emp)
+cor(v_emp[ok], v_curv[ok], method = "pearson")
+cor(v_emp[ok], v_nv[ok],   method = "pearson")
+cor(v_emp[ok], v_ang[ok],  method = "pearson")
+cor(v_emp[ok], v_add[ok],  method = "pearson")
+print('----------')
+cor(v_emp[ok], v_curv[ok], method = "spearman")
+cor(v_emp[ok], v_nv[ok],   method = "spearman")
+cor(v_emp[ok], v_ang[ok],  method = "spearman")
+cor(v_emp[ok], v_add[ok],  method = "spearman")
+# Do stimulus pairs that are more dissimilar under the ideal model tend to be ranked as more dissimilar empirically?
+```
+
+
+```{r}
+# Consistency between participants
+# Split half correlation
+# Uses S_subj -> builds half Dbar -> correlates with ideals
+
+set.seed(1)
+
+get_rdm_vec <- function(M) M[upper.tri(M, diag = FALSE)]
+
+# helper function to build a 27x27 D matrix from a table of (low, high, S_mean)
+make_D_from_S <- function(S_tbl, n_items = 27) {
+  Sbar <- matrix(NA_real_, nrow = n_items, ncol = n_items)
+  for (k in seq_len(nrow(S_tbl))) {
+    i <- S_tbl$low[k]
+    j <- S_tbl$high[k]
+    Sbar[i, j] <- S_tbl$S_mean[k]
+    Sbar[j, i] <- S_tbl$S_mean[k]
+  }
+  diag(Sbar) <- 1
+  Dbar <- 1 - Sbar
+  diag(Dbar) <- 0
+  Dbar
+}
+
+# ideal vectors
+v_curv <- get_rdm_vec(ideal_curv)
+v_nv   <- get_rdm_vec(ideal_nv)
+v_ang  <- get_rdm_vec(ideal_ang)
+v_add  <- get_rdm_vec(ideal_add01)
+
+subjs <- sort(unique(S_subj$subj_id))
+n_subj <- length(subjs)
+stopifnot(n_subj >= 4)  # sanity
+
+n_iter <- 2000
+
+out <- data.frame(
+  iter = 1:n_iter,
+  n1 = integer(n_iter),
+  n2 = integer(n_iter),
+  curv_h1 = NA_real_, curv_h2 = NA_real_,
+  nv_h1   = NA_real_, nv_h2   = NA_real_,
+  ang_h1  = NA_real_, ang_h2  = NA_real_,
+  add_h1  = NA_real_, add_h2  = NA_real_
+)
+
+for (it in 1:n_iter) {
+
+  idx <- sample(subjs)
+  n1  <- floor(n_subj / 2)
+  g1  <- idx[1:n1]
+  g2  <- idx[(n1 + 1):n_subj]
+
+  out$n1[it] <- length(g1)
+  out$n2[it] <- length(g2)
+
+  # half-average S for each pair (low, high)
+  S1 <- S_subj %>%
+    dplyr::filter(subj_id %in% g1) %>%
+    dplyr::group_by(low, high) %>%
+    dplyr::summarise(S_mean = mean(S, na.rm = TRUE), .groups = "drop")
+
+  S2 <- S_subj %>%
+    dplyr::filter(subj_id %in% g2) %>%
+    dplyr::group_by(low, high) %>%
+    dplyr::summarise(S_mean = mean(S, na.rm = TRUE), .groups = "drop")
+
+  D1 <- make_D_from_S(S1, n_items = 27)
+  D2 <- make_D_from_S(S2, n_items = 27)
+
+  v1 <- get_rdm_vec(D1)
+  v2 <- get_rdm_vec(D2)
+
+  #
+  ok <- !is.na(v1) & !is.na(v2)
+
+  out$curv_h1[it] <- cor(v1[ok], v_curv[ok], method = "spearman")
+  out$nv_h1[it]   <- cor(v1[ok], v_nv[ok],   method = "spearman")
+  out$ang_h1[it]  <- cor(v1[ok], v_ang[ok],  method = "spearman")
+  out$add_h1[it]  <- cor(v1[ok], v_add[ok],  method = "spearman")
+
+  out$curv_h2[it] <- cor(v2[ok], v_curv[ok], method = "spearman")
+  out$nv_h2[it]   <- cor(v2[ok], v_nv[ok],   method = "spearman")
+  out$ang_h2[it]  <- cor(v2[ok], v_ang[ok],  method = "spearman")
+  out$add_h2[it]  <- cor(v2[ok], v_add[ok],  method = "spearman")
+}
+
+# single number for stability per model (correlation of halffits across the iterations)
+stability <- c(
+  curv = cor(out$curv_h1, out$curv_h2, use = "complete.obs"),
+  nv   = cor(out$nv_h1,   out$nv_h2,   use = "complete.obs"),
+  ang  = cor(out$ang_h1,  out$ang_h2,  use = "complete.obs"),
+  add  = cor(out$add_h1,  out$add_h2,  use = "complete.obs")
+)
+print(round(stability, 3))
+
+# out dataframe
+# h1: the Spearman correlation between the half-1 empirical dissimilarity vector and the ideal model vector
+# h2: the same correlation but for half-2
+
+```
+
+
+Stability of N subjects analiz
+
+1. RDM stability vs N (subsample vs full 17-subject reference)
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+get_rdm_vec <- function(M) M[upper.tri(M, diag = FALSE)]
+
+make_D_from_S <- function(S_tbl, n_items = 27) {
+  Sbar <- matrix(NA_real_, nrow = n_items, ncol = n_items)
+  for (k in seq_len(nrow(S_tbl))) {
+    i <- S_tbl$low[k]
+    j <- S_tbl$high[k]
+    Sbar[i, j] <- S_tbl$S_mean[k]
+    Sbar[j, i] <- S_tbl$S_mean[k]
+  }
+  diag(Sbar) <- 1
+  Dbar <- 1 - Sbar
+  diag(Dbar) <- 0
+  Dbar
+}
+
+
+# full 17 subject RDM vector 
+n_items <- 27
+
+S_full_tbl <- S_subj %>%
+  group_by(low, high) %>%
+  summarise(S_mean = mean(S, na.rm = TRUE), .groups = "drop")
+
+D_full <- make_D_from_S(S_full_tbl, n_items = n_items)
+v_full <- get_rdm_vec(D_full)
+
+
+```
+
+```{r}
+# without replacement sampling of subjects
+set.seed(1)
+
+subjs <- sort(unique(S_subj$subj_id))
+n_subj <- length(subjs)
+
+N_grid <- c(2,4,6,8,10,12,14,16)  
+n_iter <- 1000
+
+stab <- tidyr::expand_grid(N = N_grid, iter = 1:n_iter) %>%
+  mutate(r = NA_real_)
+
+for (k in seq_len(nrow(stab))) {
+  N  <- stab$N[k]
+  ss <- sample(subjs, size = N, replace = FALSE)
+
+  S_N_tbl <- S_subj %>%
+    filter(subj_id %in% ss) %>%
+    group_by(low, high) %>%
+    summarise(S_mean = mean(S, na.rm = TRUE), .groups = "drop")
+
+  D_N <- make_D_from_S(S_N_tbl, n_items = n_items)
+  v_N <- get_rdm_vec(D_N)
+
+  ok <- !is.na(v_N) & !is.na(v_full)
+
+  # spearman correlation
+  stab$r[k] <- cor(v_N[ok], v_full[ok], method = "spearman")
+}
+```
+
+```{r}
+stab_sum <- stab %>%
+  group_by(N) %>%
+  summarise(
+    r_mean = mean(r, na.rm = TRUE),
+    r_med  = median(r, na.rm = TRUE),
+    r_lo   = quantile(r, 0.025, na.rm = TRUE),
+    r_hi   = quantile(r, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(stab_sum, aes(x = N, y = r_mean)) +
+  geom_ribbon(aes(ymin = r_lo, ymax = r_hi), alpha = 0.2) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = N_grid) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "N subjects in subsample",
+    y = "Spearman corr")
+```
+
+2) split-half stability vs N
+For each iteration, samples 2N subjects without replacement, splits into half1 and half2 each with N. builds Dissimilarity matrix for each half. 
+computes Spearman correlation between the two RDM vectors. 
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+set.seed(1)
+
+subjs <- sort(unique(S_subj$subj_id))
+n_subj <- length(subjs)
+n_items <- 27
+
+# 17 subjects, so max N for split-half is 8
+N_grid <- 2:floor(n_subj/2)   # c(2,4,6,8) 
+n_iter <- 2000
+
+stab_sh <- tidyr::expand_grid(N = N_grid, iter = 1:n_iter) %>%
+  mutate(r = NA_real_)
+
+for (k in seq_len(nrow(stab_sh))) {
+  N <- stab_sh$N[k]
+
+  # sample 2N subjects, then split into two halves of size N
+  ss <- sample(subjs, size = 2*N, replace = FALSE)
+  g1 <- ss[1:N]
+  g2 <- ss[(N+1):(2*N)]
+
+  S1 <- S_subj %>%
+    filter(subj_id %in% g1) %>%
+    group_by(low, high) %>%
+    summarise(S_mean = mean(S, na.rm = TRUE), .groups = "drop")
+
+  S2 <- S_subj %>%
+    filter(subj_id %in% g2) %>%
+    group_by(low, high) %>%
+    summarise(S_mean = mean(S, na.rm = TRUE), .groups = "drop")
+
+  # convert to dissimilarity matrices and vectors
+  D1 <- make_D_from_S(S1, n_items = n_items)
+  D2 <- make_D_from_S(S2, n_items = n_items)
+
+  v1 <- get_rdm_vec(D1)
+  v2 <- get_rdm_vec(D2)
+
+  ok <- !is.na(v1) & !is.na(v2)
+
+  stab_sh$r[k] <- cor(v1[ok], v2[ok], method = "spearman")
+}
+
+stab_sh_sum <- stab_sh %>%
+  group_by(N) %>%
+  summarise(
+    r_mean = mean(r, na.rm = TRUE),
+    r_med  = median(r, na.rm = TRUE),
+    r_lo   = quantile(r, 0.025, na.rm = TRUE),
+    r_hi   = quantile(r, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# plot
+ggplot(stab_sh_sum, aes(x = N, y = r_mean)) +
+  geom_ribbon(aes(ymin = r_lo, ymax = r_hi), alpha = 0.2) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = N_grid) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "N subjects per half",
+    y = "Spearman corr",
+    title = "Split-half RDM stability vs N"
+  )
+```
+

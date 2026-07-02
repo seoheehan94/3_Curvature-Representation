@@ -1,0 +1,481 @@
+---
+title: "Sample Size Estimation"
+output: html_document
+date: "2026-01-17"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning = FALSE}
+library(readr)
+library(tidyverse)
+library(stringr)
+library(mlogit)
+library(gmnl)
+library(pbapply)
+library(broom)
+```
+
+```{r, echo = FALSE}
+df1 <- read_csv("Han_curvRep1D_135373_SESSION_2025-12-05_15h44.11.905.csv")
+df2 <- read_csv("Han_curvRep1D_202295_SESSION_2025-12-03_23h17.34.494.csv")
+df3 <- read_csv("Han_curvRep1D_241598_SESSION_2025-12-05_23h58.47.45.csv")
+df4 <- read_csv("Han_curvRep1D_273589_SESSION_2025-12-04_16h19.53.591.csv")
+df5 <- read_csv("Han_curvRep1D_346311_SESSION_2025-12-05_21h47.10.211.csv")
+df6 <- read_csv("Han_curvRep1D_380418_SESSION_2025-12-05_22h47.42.192.csv")
+df7 <- read_csv("Han_curvRep1D_411219_SESSION_2025-12-05_03h29.35.845.csv")
+df8 <- read_csv("Han_curvRep1D_513908_SESSION_2025-12-02_12h24.20.787.csv")
+df9 <- read_csv("Han_curvRep1D_645088_SESSION_2025-12-05_21h04.09.161.csv")
+df10 <- read_csv("Han_curvRep1D_712067_SESSION_2025-12-01_20h26.13.788.csv")
+df11 <- read_csv("Han_curvRep1D_720702_SESSION_2025-12-03_12h06.17.516.csv")
+df12 <- read_csv("Han_curvRep1D_770450_SESSION_2025-12-02_18h03.42.69.csv")
+df13 <- read_csv("Han_curvRep1D_797896_SESSION_2025-12-04_18h55.19.676.csv")
+df14 <- read_csv("Han_curvRep1D_879809_SESSION_2025-12-04_23h05.25.59.csv")
+df15 <- read_csv("Han_curvRep1D_909758_SESSION_2025-12-04_21h23.15.701.csv")
+df16 <- read_csv("Han_curvRep1D_913438_SESSION_2025-12-05_20h58.37.81.csv")
+df17 <- read_csv("Han_curvRep1D_967429_SESSION_2025-11-27_22h18.59.884.csv")
+
+```
+
+
+```{r}
+
+files <- c(
+  "Han_curvRep1D_135373_SESSION_2025-12-05_15h44.11.905.csv",
+  "Han_curvRep1D_202295_SESSION_2025-12-03_23h17.34.494.csv",
+  "Han_curvRep1D_241598_SESSION_2025-12-05_23h58.47.45.csv",
+  "Han_curvRep1D_273589_SESSION_2025-12-04_16h19.53.591.csv",
+  "Han_curvRep1D_346311_SESSION_2025-12-05_21h47.10.211.csv",
+  "Han_curvRep1D_380418_SESSION_2025-12-05_22h47.42.192.csv",
+  "Han_curvRep1D_411219_SESSION_2025-12-05_03h29.35.845.csv",
+  "Han_curvRep1D_513908_SESSION_2025-12-02_12h24.20.787.csv",
+  "Han_curvRep1D_645088_SESSION_2025-12-05_21h04.09.161.csv",
+  "Han_curvRep1D_712067_SESSION_2025-12-01_20h26.13.788.csv",
+  "Han_curvRep1D_720702_SESSION_2025-12-03_12h06.17.516.csv",
+  "Han_curvRep1D_770450_SESSION_2025-12-02_18h03.42.69.csv",
+  "Han_curvRep1D_797896_SESSION_2025-12-04_18h55.19.676.csv",
+  "Han_curvRep1D_879809_SESSION_2025-12-04_23h05.25.59.csv",
+  "Han_curvRep1D_909758_SESSION_2025-12-04_21h23.15.701.csv",
+  "Han_curvRep1D_913438_SESSION_2025-12-05_20h58.37.81.csv",
+  "Han_curvRep1D_967429_SESSION_2025-11-27_22h18.59.884.csv"
+)
+
+df_raw_all <- map_dfr(files, function(f) {
+  read_csv(f, 
+           col_types = cols(rt = col_double(), 
+                            response = col_character(), 
+                            correct_response = col_character(), 
+                            correct = col_logical(), 
+                            block_failed = col_logical(), 
+                            blocks_failed_total = col_double(), 
+                            .default = col_guess()),
+           na = c("", "NA", "null", "NaN")) %>%
+    mutate(
+      file = basename(f),
+      subj_id = str_match(file, "Han_curvRep1D_(\\d+)_SESSION")[,2]
+    )
+})
+
+```
+
+
+```{r}
+# Checking the RT warnings (= RTs faster than 500)
+rt_warnings <- df_raw_all %>%
+  filter(trial_kind == "rt_warning") %>%
+  count(subj_id)
+rt_warnings
+
+df_raw_all %>%
+  filter(rt < 500) %>% 
+  select(participant, rt, block_index, trial_in_block, trial_kind)
+```
+
+
+```{r}
+# clean the table. drop too fast trials and only keep exp221 and exp111
+RT_MIN_MS <- 500
+df_trials <- df_raw_all %>%
+  filter(
+    trial_kind %in% c("exp_221", "exp_111"),
+    is_practice == FALSE,
+    is_catch == FALSE,
+    rt >= RT_MIN_MS
+  )
+
+df_items <- df_trials %>%
+  group_by(subj_id) %>%
+  mutate(triad_id = row_number()) %>%
+  ungroup() %>%
+  select(
+    subj_id, triad_id, chosen_index,
+    stim_left, stim_middle, stim_right
+  ) %>%
+  pivot_longer(
+    cols = c(stim_left, stim_middle, stim_right),
+    names_to = "position",
+    values_to = "stim_path"
+  ) %>%
+  mutate(
+    pos_index = case_when(
+      position == "stim_left"   ~ 0L,
+      position == "stim_middle" ~ 1L,
+      position == "stim_right"  ~ 2L
+    ),
+    choice = as.integer(pos_index == chosen_index),
+    is_chosen = pos_index == chosen_index,
+    nv = as.integer(str_match(stim_path, "stim_nv(\\d+)_")[, 2]),
+    ang = as.integer(str_match(stim_path, "ang(\\d+)_")[, 2]),
+    sm = as.integer(str_match(stim_path, "curv(\\d+)_rot")[, 2])
+  )
+
+alt_data_diff <- df_items %>%
+  group_by(subj_id, triad_id) %>%
+  mutate(
+    sm_dev  = abs(sm - mean(sm)),
+    nv_dev  = abs(nv - mean(nv)),
+    ang_dev = abs(ang - mean(ang))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    trial_id = paste0(subj_id, "_", triad_id)
+  ) %>%
+  mutate(
+    sm_dev_s  = if (max(sm_dev, na.rm = TRUE)  == 0) rep(0, n()) else sm_dev  / max(sm_dev, na.rm = TRUE),
+    nv_dev_s  = if (max(nv_dev, na.rm = TRUE)  == 0) rep(0, n()) else nv_dev  / max(nv_dev, na.rm = TRUE),
+    ang_dev_s = if (max(ang_dev, na.rm = TRUE) == 0) rep(0, n()) else ang_dev / max(ang_dev, na.rm = TRUE)
+  ) %>%
+  select(
+    subj_id, triad_id, trial_id, pos_index, choice,
+    sm_dev, nv_dev, ang_dev,
+    sm_dev_s, nv_dev_s, ang_dev_s
+  ) %>%
+  mutate(
+    subj_id   = as.character(subj_id),
+    trial_id  = as.character(trial_id),
+    pos_index = factor(pos_index, levels = c(0, 1, 2)),
+    choice    = as.logical(choice)
+  ) %>%
+  arrange(subj_id, trial_id, pos_index)
+```
+
+
+
+# Fit the actual pilot model
+```{r}
+mlogit_data <- mlogit.data(
+  data = alt_data_diff,
+  shape = "long",
+  choice = "choice",
+  chid.var = "trial_id",
+  alt.var = "pos_index",
+  id.var = "subj_id"
+)
+
+model_m <- gmnl(
+  choice ~ sm_dev_s + nv_dev_s + ang_dev_s | 0 | 0 | 0,
+  data = mlogit_data,
+  model = "mixl",
+  ranp = c(
+    sm_dev_s = "n",
+    nv_dev_s = "n",
+    ang_dev_s = "n"
+  ),
+  panel = TRUE
+)
+
+summary(model_m)
+```
+
+# Extract pilot estimates for simulation
+```{r}
+coef_all <- coef(model_m)
+coef_all
+```
+
+```{r}
+get_param <- function(x, possible_names) {
+  hit <- intersect(possible_names, names(x))
+  if (length(hit) == 0) return(NA_real_)
+  unname(x[hit[1]])
+}
+
+# Means of random coefficients
+mu_sm  <- get_param(coef_all, c("sm_dev_s"))
+mu_nv  <- get_param(coef_all, c("nv_dev_s"))
+mu_ang <- get_param(coef_all, c("ang_dev_s"))
+
+# SDs of random coefficients
+sd_sm <- get_param(coef_all, c("sd.sm_dev_s", "sigma.sm_dev_s"))
+sd_nv <- get_param(coef_all, c("sd.nv_dev_s", "sigma.nv_dev_s"))
+sd_ang <- get_param(coef_all, c("sd.ang_dev_s", "sigma.ang_dev_s"))
+
+pilot_pars <- tibble(
+  parameter = c("mu_sm", "mu_nv", "mu_ang", "sd_sm", "sd_nv", "sd_ang"),
+  estimate  = c(mu_sm, mu_nv, mu_ang, sd_sm, sd_nv, sd_ang)
+)
+
+pilot_pars
+```
+
+# Build a triad template from the pilot design
+```{r}
+design_template <- alt_data_diff %>%
+  select(pos_index, sm_dev_s, nv_dev_s, ang_dev_s) %>%
+  mutate(row_id = row_number())  # temporary, not essential
+
+template_trials <- alt_data_diff %>%
+  group_by(subj_id, triad_id) %>%
+  mutate(template_trial = cur_group_id()) %>%
+  ungroup() %>%
+  select(template_trial, pos_index, sm_dev_s, nv_dev_s, ang_dev_s) %>%
+  distinct()
+
+n_template_trials <- dplyr::n_distinct(template_trials$template_trial)
+```
+
+
+# Choice simulator for the mixed logit model
+```{r}
+sample_subject_trials <- function(trials_per_subj, n_template_trials) {
+  if (trials_per_subj <= n_template_trials) {
+    sample.int(n_template_trials, size = trials_per_subj, replace = FALSE)
+  } else {
+    sample.int(n_template_trials, size = trials_per_subj, replace = TRUE)
+  }
+}
+
+softmax_probs <- function(x) {
+  z <- exp(x - max(x))
+  z / sum(z)
+}
+
+simulate_once_mixl <- function(
+  Nsubj,
+  trials_per_subj,
+  mu_sm, mu_nv, mu_ang,
+  sd_sm, sd_nv, sd_ang,
+  template = template_trials
+) {
+  subj_ids <- paste0("S", seq_len(Nsubj))
+
+  beta_subj <- tibble(
+    subj_id = subj_ids,
+    b_sm  = rnorm(Nsubj, mean = mu_sm,  sd = sd_sm),
+    b_nv  = rnorm(Nsubj, mean = mu_nv,  sd = sd_nv),
+    b_ang = rnorm(Nsubj, mean = mu_ang, sd = sd_ang)
+  )
+
+  subj_trial_map <- purrr::map_dfr(seq_len(Nsubj), function(i) {
+    tibble(
+      subj_id = subj_ids[i],
+      sim_triad = seq_len(trials_per_subj),
+      template_trial = sample_subject_trials(trials_per_subj, n_template_trials)
+    )
+  }) %>%
+    mutate(
+      trial_id = paste0(subj_id, "_", sim_triad)
+    )
+
+  dsim <- subj_trial_map %>%
+    left_join(template, by = "template_trial") %>%
+    left_join(beta_subj, by = "subj_id") %>%
+    mutate(
+      utility = b_sm * sm_dev_s + b_nv * nv_dev_s + b_ang * ang_dev_s
+    ) %>%
+    group_by(subj_id, trial_id) %>%
+    mutate(
+      prob = softmax_probs(utility),
+      chosen_alt = sample(pos_index, size = 1, prob = prob),
+      choice = as.integer(pos_index == chosen_alt)
+    ) %>%
+    ungroup() %>%
+    mutate(
+      subj_id = as.character(subj_id),
+      trial_id = as.character(trial_id),
+      pos_index = factor(pos_index, levels = c(0, 1, 2))
+    ) %>%
+    select(subj_id, trial_id, pos_index, choice, sm_dev_s, nv_dev_s, ang_dev_s)
+
+  dsim
+}
+```
+
+
+# Fit function for each simulated dataset
+```{r}
+fit_mixl <- function(dsim) {
+  dsim_mlogit <- mlogit.data(
+    data = dsim,
+    shape = "long",
+    choice = "choice",
+    chid.var = "trial_id",
+    alt.var = "pos_index",
+    id.var = "subj_id"
+  )
+
+  tryCatch(
+    gmnl(
+      choice ~ sm_dev_s + nv_dev_s + ang_dev_s | 0 | 0 | 0,
+      data = dsim_mlogit,
+      model = "mixl",
+      ranp = c(
+        sm_dev_s = "n",
+        nv_dev_s = "n",
+        ang_dev_s = "n"
+      ),
+      panel = TRUE
+    ),
+    error = function(e) NULL
+  )
+}
+```
+
+# Extract p-values from the fitted mixed logit model
+```{r}
+extract_pvals_mixl <- function(model_fit) {
+  if (is.null(model_fit)) {
+    return(c(
+      p_sm = NA_real_,
+      p_nv = NA_real_,
+      p_ang = NA_real_
+    ))
+  }
+
+  cf <- summary(model_fit)$CoefTable
+  rn <- rownames(cf)
+
+  get_p <- function(term) {
+    if (!term %in% rn) return(NA_real_)
+    cf[term, "Pr(>|z|)"]
+  }
+
+  c(
+    p_sm  = get_p("sm_dev_s"),
+    p_nv  = get_p("nv_dev_s"),
+    p_ang = get_p("ang_dev_s")
+  )
+}
+```
+
+# Main power simulation loop
+```{r}
+power_sim_mixl <- function(
+  Nvec = c(12, 16, 20, 24, 28, 32, 40),
+  trials_per_subj = 405,
+  sims = 200,
+  alpha = 0.05,
+  mu_sm, mu_nv, mu_ang,
+  sd_sm, sd_nv, sd_ang
+) {
+  results <- tibble()
+
+  for (N in Nvec) {
+    cat(sprintf("\nSimulating mixed logit: N = %d, trials_per_subj = %d, sims = %d\n",
+                N, trials_per_subj, sims))
+
+    sim_results <- pblapply(seq_len(sims), function(s) {
+      dsim <- simulate_once_mixl(
+        Nsubj = N,
+        trials_per_subj = trials_per_subj,
+        mu_sm = mu_sm,
+        mu_nv = mu_nv,
+        mu_ang = mu_ang,
+        sd_sm = sd_sm,
+        sd_nv = sd_nv,
+        sd_ang = sd_ang
+      )
+
+      mfit <- fit_mixl(dsim)
+      extract_pvals_mixl(mfit)
+    })
+
+    sim_mat <- do.call(rbind, sim_results)
+
+    power_sm  <- mean(sim_mat[, "p_sm"]  < alpha, na.rm = TRUE)
+    power_nv  <- mean(sim_mat[, "p_nv"]  < alpha, na.rm = TRUE)
+    power_ang <- mean(sim_mat[, "p_ang"] < alpha, na.rm = TRUE)
+
+    results <- bind_rows(
+      results,
+      tibble(
+        N = N,
+        trials_per_subj = trials_per_subj,
+        power_sm  = power_sm,
+        power_nv  = power_nv,
+        power_ang = power_ang
+      )
+    )
+
+    cat(sprintf("  -> power: sm = %.3f, nv = %.3f, ang = %.3f\n",
+                power_sm, power_nv, power_ang))
+  }
+
+  results
+}
+```
+
+
+# Run the power analysis
+```{r}
+# For your reduced design: 405 trials per participant
+set.seed(123)
+
+Ngrid <- c(12, 16, 20, 24, 28, 32, 40)
+sims  <- 200   # increase to 300-500 for final estimate
+trials_per_subj <- 405
+
+power_mixl_405 <- power_sim_mixl(
+  Nvec = Ngrid,
+  trials_per_subj = trials_per_subj,
+  sims = sims,
+  alpha = 0.05,
+  mu_sm = mu_sm,
+  mu_nv = mu_nv,
+  mu_ang = mu_ang,
+  sd_sm = sd_sm,
+  sd_nv = sd_nv,
+  sd_ang = sd_ang
+)
+
+power_mixl_405
+```
+
+```{r}
+# Smallest N reaching 80% power
+target <- 0.80
+
+minN_mixl_405 <- power_mixl_405 %>%
+  summarise(
+    min_N_for_80_sm  = if (any(power_sm  >= target)) min(N[power_sm  >= target]) else NA_integer_,
+    min_N_for_80_nv  = if (any(power_nv  >= target)) min(N[power_nv  >= target]) else NA_integer_,
+    min_N_for_80_ang = if (any(power_ang >= target)) min(N[power_ang >= target]) else NA_integer_
+  )
+
+minN_mixl_405
+```
+
+
+```{r}
+power_mixl_405 %>%
+  pivot_longer(
+    cols = c(power_sm, power_nv, power_ang),
+    names_to = "predictor",
+    values_to = "power"
+  ) %>%
+  ggplot(aes(x = N, y = power, color = predictor)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept = 0.80, linetype = "dashed") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Simulation-Based Power Analysis for Mixed Logit Model",
+    x = "Sample size (number of subjects)",
+    y = "Estimated power"
+  ) +
+  theme_minimal()
+```
+

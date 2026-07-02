@@ -1,0 +1,249 @@
+---
+title: "timing inspection"
+output: html_document
+date: "2026-01-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning = FALSE}
+library(readr)
+library(tidyverse)
+library(stringr)
+library(survival)
+library(lme4)
+library(tidyr)
+library(broom)
+library(dplyr)
+library(ggplot2)
+library(vegan)
+```
+
+```{r, echo = FALSE}
+df1 <- read_csv("Han_curvRep1D_135373_SESSION_2025-12-05_15h44.11.905.csv")
+df2 <- read_csv("Han_curvRep1D_202295_SESSION_2025-12-03_23h17.34.494.csv")
+df3 <- read_csv("Han_curvRep1D_241598_SESSION_2025-12-05_23h58.47.45.csv")
+df4 <- read_csv("Han_curvRep1D_273589_SESSION_2025-12-04_16h19.53.591.csv")
+df5 <- read_csv("Han_curvRep1D_346311_SESSION_2025-12-05_21h47.10.211.csv")
+df6 <- read_csv("Han_curvRep1D_380418_SESSION_2025-12-05_22h47.42.192.csv")
+df7 <- read_csv("Han_curvRep1D_411219_SESSION_2025-12-05_03h29.35.845.csv")
+df8 <- read_csv("Han_curvRep1D_513908_SESSION_2025-12-02_12h24.20.787.csv")
+df9 <- read_csv("Han_curvRep1D_645088_SESSION_2025-12-05_21h04.09.161.csv")
+df10 <- read_csv("Han_curvRep1D_712067_SESSION_2025-12-01_20h26.13.788.csv")
+df11 <- read_csv("Han_curvRep1D_720702_SESSION_2025-12-03_12h06.17.516.csv")
+df12 <- read_csv("Han_curvRep1D_770450_SESSION_2025-12-02_18h03.42.69.csv")
+df13 <- read_csv("Han_curvRep1D_797896_SESSION_2025-12-04_18h55.19.676.csv")
+df14 <- read_csv("Han_curvRep1D_879809_SESSION_2025-12-04_23h05.25.59.csv")
+df15 <- read_csv("Han_curvRep1D_909758_SESSION_2025-12-04_21h23.15.701.csv")
+df16 <- read_csv("Han_curvRep1D_913438_SESSION_2025-12-05_20h58.37.81.csv")
+df17 <- read_csv("Han_curvRep1D_967429_SESSION_2025-11-27_22h18.59.884.csv")
+
+```
+
+```{r}
+datas <- list(df1, df2, df3, df4, df5, df6, df7, df8, df9, df10, df11, df12, df13, df14, df15, df16, df17)
+total_times_ms <- numeric(length(datas))
+
+for (i in seq_along(datas)) {
+  d <- datas[[i]]
+  total_times_ms[i] <- tail(d$time_elapsed, 1)
+}
+
+total_times_mins <- total_times_ms / 60000
+total_times_mins
+print(paste("mean:", mean(total_times_mins)))
+print(paste("max:", max(total_times_mins)))
+print(paste("min:", min(total_times_mins)))
+
+```
+
+```{r}
+files <- c(
+  "Han_curvRep1D_135373_SESSION_2025-12-05_15h44.11.905.csv",
+  "Han_curvRep1D_202295_SESSION_2025-12-03_23h17.34.494.csv",
+  "Han_curvRep1D_241598_SESSION_2025-12-05_23h58.47.45.csv",
+  "Han_curvRep1D_273589_SESSION_2025-12-04_16h19.53.591.csv",
+  "Han_curvRep1D_346311_SESSION_2025-12-05_21h47.10.211.csv",
+  "Han_curvRep1D_380418_SESSION_2025-12-05_22h47.42.192.csv",
+  "Han_curvRep1D_411219_SESSION_2025-12-05_03h29.35.845.csv",
+  "Han_curvRep1D_513908_SESSION_2025-12-02_12h24.20.787.csv",
+  "Han_curvRep1D_645088_SESSION_2025-12-05_21h04.09.161.csv",
+  "Han_curvRep1D_712067_SESSION_2025-12-01_20h26.13.788.csv",
+  "Han_curvRep1D_720702_SESSION_2025-12-03_12h06.17.516.csv",
+  "Han_curvRep1D_770450_SESSION_2025-12-02_18h03.42.69.csv",
+  "Han_curvRep1D_797896_SESSION_2025-12-04_18h55.19.676.csv",
+  "Han_curvRep1D_879809_SESSION_2025-12-04_23h05.25.59.csv",
+  "Han_curvRep1D_909758_SESSION_2025-12-04_21h23.15.701.csv",
+  "Han_curvRep1D_913438_SESSION_2025-12-05_20h58.37.81.csv",
+  "Han_curvRep1D_967429_SESSION_2025-11-27_22h18.59.884.csv"
+)
+
+timing_tbl <- tibble(
+  file = files,
+  mins = total_times_mins
+) %>% arrange(mins)
+
+timing_tbl
+timing_tbl %>% slice(1)
+```
+
+```{r}
+sus <- datas[[which.min(total_times_mins)]]
+nrow(sus)
+
+# last time stamps
+tail(sus$time_elapsed, 20)
+```
+
+```{r}
+# does this one have the same # of trials 
+trial_counts <- sapply(datas, nrow)
+tibble(file = files, n_trials = trial_counts, mins = total_times_mins) %>%
+  arrange(n_trials)
+
+max(sus$trial_index, na.rm = TRUE)
+max_trial_index <- sapply(datas, function(d) max(d$trial_index, na.rm = TRUE))
+tibble(file = files, max_trial_index, mins = total_times_mins) %>% arrange(max_trial_index)
+
+```
+```{r}
+# looking at RTs
+library(dplyr)
+library(readr)
+library(purrr)
+
+datas_clean <- map(datas, ~ .x %>%
+  mutate(
+    rt_num = parse_number(as.character(rt))  
+  ))
+
+rt_summary <- map_dfr(datas_clean, ~ .x %>%
+  filter(!is.na(rt_num), rt_num > 0) %>%
+  summarise(
+    mean_rt = mean(rt_num),
+    median_rt = median(rt_num),
+    p10 = quantile(rt_num, 0.10),
+    p25 = quantile(rt_num, 0.25),
+    n_rt = n()
+  ))
+
+rt_summary <- rt_summary %>%
+  mutate(file = files, mins = total_times_mins) %>%
+  select(file, mins, n_rt, mean_rt, median_rt, p10, p25) %>%
+  arrange(mins)
+
+rt_summary
+```
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(dplyr)
+library(purrr)
+library(stringr)
+
+build_rdm_from_stims <- function(df) {
+
+  df2 <- df %>%
+    filter(
+      is_practice == FALSE,
+      !is.na(chosen_index),
+      chosen_index %in% 1:3,
+      !is.na(stim_left), !is.na(stim_middle), !is.na(stim_right)
+    ) %>%
+    mutate(
+      L = as.character(stim_left),
+      M = as.character(stim_middle),
+      R = as.character(stim_right),
+      # pick the grouped pair (the two NOT chosen as odd-one-out)
+      stim1 = case_when(
+        chosen_index == 1 ~ M,
+        chosen_index == 2 ~ L,
+        chosen_index == 3 ~ L
+      ),
+      stim2 = case_when(
+        chosen_index == 1 ~ R,
+        chosen_index == 2 ~ R,
+        chosen_index == 3 ~ M
+      ),
+      # sort pair so (A,B) == (B,A)
+      stim_min = pmap_chr(list(stim1, stim2), ~ sort(c(..1, ..2))[1]),
+      stim_max = pmap_chr(list(stim1, stim2), ~ sort(c(..1, ..2))[2])
+    ) %>%
+    count(stim_min, stim_max, name = "n")
+
+  stim_all <- sort(unique(c(df2$stim_min, df2$stim_max)))
+  n <- length(stim_all)
+
+  sim <- matrix(0, n, n, dimnames = list(stim_all, stim_all))
+
+  i1 <- match(df2$stim_min, stim_all)
+  i2 <- match(df2$stim_max, stim_all)
+
+  sim[cbind(i1, i2)] <- df2$n
+  sim[cbind(i2, i1)] <- df2$n
+
+  rdm <- max(sim) - sim
+  diag(rdm) <- 0
+  rdm
+}
+
+
+```
+
+```{r}
+sus_idx <- which.min(total_times_mins)
+
+rdm_sus <- build_rdm_from_stims(datas_clean[[sus_idx]])
+
+rdms_others <- map(datas_clean[-sus_idx], build_rdm_from_stims)
+
+stim_union <- sort(unique(unlist(lapply(rdms_others, rownames))))
+stim_union <- sort(unique(c(stim_union, rownames(rdm_sus))))
+
+embed <- function(rdm, stim_union) {
+  out <- matrix(NA_real_, length(stim_union), length(stim_union),
+                dimnames = list(stim_union, stim_union))
+  common <- intersect(rownames(rdm), stim_union)
+  out[common, common] <- rdm[common, common]
+  diag(out) <- 0
+  out
+}
+
+rdm_sus_u <- embed(rdm_sus, stim_union)
+rdm_group_u <- rdms_others %>%
+  map(~ embed(.x, stim_union)) %>%
+  Reduce("+", .) / length(rdms_others)
+
+```
+
+```{r}
+mask <- upper.tri(rdm_sus_u) & !is.na(rdm_sus_u) & !is.na(rdm_group_u)
+
+cor(rdm_sus_u[mask], rdm_group_u[mask], method = "spearman")
+
+```
+
+```{r}
+# Leave-one-out RDM correlation
+# for each participant, the spearman correlation between that participant’s RDM and the average RDM of all other participants
+
+loo_corrs <- map_dbl(seq_along(datas_clean), function(i) {
+  rdm_i <- embed(build_rdm_from_stims(datas_clean[[i]]), stim_union)
+  rdms_rest <- map(datas_clean[-i], ~ embed(build_rdm_from_stims(.x), stim_union))
+  rdm_rest <- Reduce("+", rdms_rest) / length(rdms_rest)
+
+  m <- upper.tri(rdm_i) & !is.na(rdm_i) & !is.na(rdm_rest)
+  cor(rdm_i[m], rdm_rest[m], method = "spearman")
+})
+
+tibble(file = files, mins = total_times_mins, loo_r = loo_corrs) %>%
+  arrange(mins)
+
+```
+
