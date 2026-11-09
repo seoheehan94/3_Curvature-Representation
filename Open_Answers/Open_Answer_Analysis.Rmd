@@ -1,0 +1,899 @@
+---
+title: "Curvature open-answer analysis by participant cluster"
+subtitle: "Human and AI coding, separated by experiment and instruction condition"
+author: ""
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+# Overview
+
+This file reads the two annotated workbooks independently, attaches **one cluster assignment per participant from the corresponding experiment × condition cluster CSV**, and conducts **separate** analyses for four groups:
+
+1. Experiment 1 — Curvature instruction
+2. Experiment 1 — No instruction
+3. Experiment 2 — Curvature instruction
+4. Experiment 2 — No instruction
+
+For each group, **human and AI coding are shown separately** and compared for agreement. Only five binary indicators are analyzed. **Priority 1–3**, **notes**, and the Experiment 2 **animal-like** indicator are reserved for later analyses. Missing indicator codes are preserved as `NA`, not recoded as zero.
+
+**File placement:** Put this `.Rmd` and both Excel workbooks in `OOO_Curvature/Open_Answer_Analysis/`. Leave the four `participant_cluster_lookup.csv` files where the main analyses exported them. This `.Rmd` accesses them at these *relative paths*:
+
+- `../Exp1/Exp1_curvature/participant_cluster_lookup.csv`
+- `../Exp1/Exp1_noInstr/participant_cluster_lookup.csv`
+- `../Exp2/Exp2_curvature/participant_cluster_lookup.csv`
+- `../Exp2/Exp2_noInstr/participant_cluster_lookup.csv`
+
+The relative paths are resolved from the `.Rmd` directory when knitting in RStudio. The human workbook has four study sheets; the AI workbook has those same four sheets plus a `Coding guide`, which is not used.
+
+The current workbooks contain **35, 36, 36 and 36** participants, respectively, for a total of **143 distinct IDs**. Participant IDs are unique across the four experiment–condition groups. Some rows without participant IDs are continuation text, **not additional participants**.
+
+# Setup and data import
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 11, fig.height = 5.8)
+```
+
+
+```{r}
+library(readxl)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+human_file <- "Curvature Open Answers.xlsx"
+ai_file <- "Curvature_Open_Answers_AI.xlsx"
+
+stopifnot(file.exists(human_file), file.exists(ai_file))
+```
+
+## Import all excel four sheets 
+```{r}
+normalize_id <- function(x) {
+  sub("\\.0+$", "", trimws(as.character(x)))
+}
+
+binary_code <- function(x) {
+  x <- trimws(as.character(x))
+  x[is.na(x) | x == ""] <- NA_character_
+
+  if (any(!is.na(x) & !(x %in% c("0", "1")))) {
+    stop("A coding column contains a value other than 0, 1, or NA.")
+  }
+
+  as.integer(x)
+}
+
+
+read_answers <- function(file, sheet, experiment, condition, coder) {
+
+  dat <- read_excel(file, sheet = sheet, col_types = "text")
+
+  if (experiment == "Exp 2") {
+
+    # Exp2 has 6 indicators (columns 3–8)
+    dat <- dat[, 1:9]
+
+    names(dat) <- c(
+      "subj_id", "answer", "smoothness", "vertices",
+      "third_feature", "intuition", "globalness", "animal_like", "size"
+    )
+
+  } else {
+
+    # Exp1 has 5 indicators (columns 3–7)
+    dat <- dat[, 1:8]
+
+    names(dat) <- c(
+      "subj_id", "answer", "smoothness", "vertices",
+      "third_feature", "intuition", "globalness", "size"
+    )
+
+    dat$animal_like <- NA_character_
+  }
+
+  dat %>%
+    filter(!is.na(subj_id), trimws(subj_id) != "") %>%
+    mutate(
+      subj_id = normalize_id(subj_id),
+      across(c(smoothness:animal_like, size), binary_code),
+      experiment = experiment,
+      condition = condition,
+      coder = coder,
+      .before = 1
+    )
+}
+
+# Human coding
+human <- bind_rows(
+  read_answers(human_file, "exp1 curv",
+               "Exp 1", "Curvature instruction", "Human"),
+  read_answers(human_file, "exp1 noInstr",
+               "Exp 1", "No instruction", "Human"),
+  read_answers(human_file, "exp2 curv",
+               "Exp 2", "Curvature instruction", "Human"),
+  read_answers(human_file, "exp2 noInstr",
+               "Exp 2", "No instruction", "Human")
+)
+
+# AI coding
+ai <- bind_rows(
+  read_answers(ai_file, "exp1 curv",
+               "Exp 1", "Curvature instruction", "AI"),
+  read_answers(ai_file, "exp1 noInstr",
+               "Exp 1", "No instruction", "AI"),
+  read_answers(ai_file, "exp2 curv",
+               "Exp 2", "Curvature instruction", "AI"),
+  read_answers(ai_file, "exp2 noInstr",
+               "Exp 2", "No instruction", "AI")
+)
+
+answers <- bind_rows(human, ai)
+
+# Check number of participants per group and coder
+answers %>%
+  count(experiment, condition, coder, name = "n_participants")
+```
+
+## Checking participant IDs
+```{r}
+# Check for duplicates
+duplicates <- answers %>%
+  count(experiment, condition, coder, subj_id) %>%
+  filter(n > 1)
+
+print(duplicates)
+stopifnot(nrow(duplicates) == 0)
+
+# Check human and AI participant coverage
+keys <- c("experiment", "condition", "subj_id")
+
+human_ids <- human %>% select(all_of(keys))
+ai_ids <- ai %>% select(all_of(keys))
+
+only_human <- anti_join(human_ids, ai_ids, by = keys)
+only_ai <- anti_join(ai_ids, human_ids, by = keys)
+
+print(only_human)
+print(only_ai)
+
+stopifnot(
+  nrow(only_human) == 0,
+  nrow(only_ai) == 0
+)
+```
+
+## import cluster info
+```{r}
+read_clusters <- function(file, experiment, condition) {
+  if (!file.exists(file)) stop("Missing cluster CSV: ", file)
+
+  dat <- read_csv(
+    file,
+    col_types = cols(.default = col_character()),
+    show_col_types = FALSE
+  )
+
+  if (!all(c("subj_id", "cluster") %in% names(dat))) {
+    stop("Cluster CSV needs subj_id and cluster: ", file)
+  }
+
+  dat %>%
+    transmute(
+      experiment = experiment,
+      condition = condition,
+      subj_id = normalize_id(subj_id),
+      cluster = trimws(as.character(cluster))
+    ) %>%
+    filter(!is.na(subj_id), subj_id != "") %>%
+    distinct()
+}
+
+cluster_lookup <- bind_rows(
+  read_clusters(
+    "../Exp1/Exp1_curvature/participant_cluster_lookup.csv",
+    "Exp 1", "Curvature instruction"
+  ),
+  read_clusters(
+    "../Exp1/Exp1_noInstr/participant_cluster_lookup.csv",
+    "Exp 1", "No instruction"
+  ),
+  read_clusters(
+    "../Exp2/Exp2_curvature/participant_cluster_lookup.csv",
+    "Exp 2", "Curvature instruction"
+  ),
+  read_clusters(
+    "../Exp2/Exp2_noInstr/participant_cluster_lookup.csv",
+    "Exp 2", "No instruction"
+  )
+)
+
+# Number of participants in each cluster
+cluster_lookup %>%
+  count(experiment, condition, cluster, name = "n_participants")
+
+```
+## Check and join the cluster assignments
+```{r}
+# Check for conflicting cluster assignments
+cluster_duplicates <- cluster_lookup %>%
+  count(experiment, condition, subj_id) %>%
+  filter(n > 1)
+
+print(cluster_duplicates)
+stopifnot(nrow(cluster_duplicates) == 0)
+
+# Check for missing cluster labels in the lookup
+stopifnot(
+  !any(is.na(cluster_lookup$cluster) | cluster_lookup$cluster == "")
+)
+
+# Identify participants without a cluster match
+missing_clusters <- answers %>%
+  distinct(experiment, condition, subj_id) %>%
+  anti_join(cluster_lookup, by = keys)
+
+print(missing_clusters)
+
+# Join cluster assignments
+answers_all <- answers %>%
+  left_join(cluster_lookup, by = keys)
+
+# Keep only participants with clusters for cluster-based analyses
+answers_clustered <- answers_all %>%
+  filter(!is.na(cluster), cluster != "")
+
+if (nrow(missing_clusters) > 0) {
+  warning(
+    nrow(missing_clusters),
+    " participant(s) lack cluster assignments. Verify them in the main analysis."
+  )
+}
+
+# Check final numbers by cluster
+answers_clustered %>%
+  distinct(experiment, condition, subj_id, cluster) %>%
+  count(experiment, condition, cluster, name = "n_participants")
+```
+
+## Prepare the five features and check missing coding values
+```{r}
+answers_long_all <- answers_all %>%
+  pivot_longer(
+    cols = c(
+      smoothness, vertices, third_feature,
+      intuition, globalness, animal_like, size
+    ),
+    names_to = "feature",
+    values_to = "mentioned"
+  ) %>%
+  mutate(
+    feature = case_when(
+      feature == "smoothness" ~ "Smoothness",
+      feature == "vertices" ~ "Vertices",
+      feature == "third_feature" & experiment == "Exp 1" ~ "Angle",
+      feature == "third_feature" & experiment == "Exp 2" ~ "Range",
+      feature == "intuition" ~ "Intuition",
+      feature == "globalness" ~ "Globalness",
+      feature == "animal_like" ~ "Animal-like",
+      feature == "size" ~ "Size"
+    )
+  ) %>%
+  filter(
+    !(experiment == "Exp 1" & feature == "Animal-like")
+  )
+
+# Check missing indicator codes
+missing_codes <- answers_long_all %>%
+  group_by(experiment, condition, coder, feature) %>%
+  summarise(
+    n_missing = sum(is.na(mentioned)),
+    .groups = "drop"
+  ) %>%
+  filter(n_missing > 0)
+
+print(missing_codes)
+
+# Dataset for cluster analyses
+answers_long <- answers_long_all %>%
+  filter(!is.na(cluster), cluster != "")
+```
+
+## Feature mention rates by cluster
+```{r}
+mention_rates <- answers_long %>%
+  group_by(experiment, condition, coder, cluster, feature) %>%
+  summarise(
+    n_coded = sum(!is.na(mentioned)),
+    n_mentioned = sum(mentioned == 1, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    proportion = if_else(
+      n_coded > 0,
+      n_mentioned / n_coded,
+      NA_real_
+    ),
+    percentage = 100 * proportion
+  )
+
+# 95% Wilson confidence intervals
+z <- qnorm(0.975)
+
+mention_rates <- mention_rates %>%
+  mutate(
+    denominator = 1 + z^2 / n_coded,
+    center = (proportion + z^2 / (2 * n_coded)) / denominator,
+    half_width = z * sqrt(
+      proportion * (1 - proportion) / n_coded +
+      z^2 / (4 * n_coded^2)
+    ) / denominator,
+    ci_lower = 100 * pmax(0, center - half_width),
+    ci_upper = 100 * pmin(1, center + half_width)
+  ) %>%
+  select(-denominator, -center, -half_width)
+
+# Save descriptive results
+dir.create("open_answer_outputs", showWarnings = FALSE)
+
+write_csv(
+  mention_rates,
+  "open_answer_outputs/mention_rates.csv"
+)
+```
+
+```{r}
+# Experiment 1, curvature instruction
+mention_rates %>%
+  filter(
+    experiment == "Exp 1",
+    condition == "Curvature instruction"
+  ) %>%
+  select(
+    coder, cluster, feature,
+    n_mentioned, n_coded, percentage
+  ) %>%
+  mutate(percentage = round(percentage, 1)) %>%
+  as.data.frame() %>%
+  print(row.names = FALSE)
+```
+
+```{r}
+# Experiment 1, no instruction
+mention_rates %>%
+  filter(
+    experiment == "Exp 1",
+    condition == "No instruction"
+  ) %>%
+  select(
+    coder, cluster, feature,
+    n_mentioned, n_coded, percentage
+  ) %>%
+  mutate(percentage = round(percentage, 1)) %>%
+  as.data.frame() %>%
+  print(row.names = FALSE)
+```
+
+```{r}
+# Experiment 2, curvature instruction
+mention_rates %>%
+  filter(
+    experiment == "Exp 2",
+    condition == "Curvature instruction"
+  ) %>%
+  select(
+    coder, cluster, feature,
+    n_mentioned, n_coded, percentage
+  ) %>%
+  mutate(percentage = round(percentage, 1)) %>%
+  as.data.frame() %>%
+  print(row.names = FALSE)
+```
+
+```{r}
+# Experiment 2, no instruction
+mention_rates %>%
+  filter(
+    experiment == "Exp 2",
+    condition == "No instruction"
+  ) %>%
+  select(
+    coder, cluster, feature,
+    n_mentioned, n_coded, percentage
+  ) %>%
+  mutate(percentage = round(percentage, 1)) %>%
+  as.data.frame() %>%
+  print(row.names = FALSE)
+```
+
+```{r}
+knitr::opts_chunk$set(
+  fig.width = 6.5,
+  fig.height = 6.5,
+  out.width = "75%",
+  fig.align = "center"
+)
+```
+
+
+```{r}
+library(ggplot2)
+library(ggh4x)
+
+# Consistent project colors
+feature_cols <- c(
+  "Smoothness" = "#F8766D",
+  "Vertices" = "#00BA38",
+  "Angle" = "#619CFF",
+  "Range" = "#619CFF",
+  "Intuition" = "#A78BFA",
+  "Globalness" = "#B59B73",
+  "Animal-like" = "#CC79A7",
+  "Size" = "#E69F00"
+)
+
+plot_open_answers <- function(exp, cond) {
+
+  dat <- mention_rates %>%
+    filter(
+      experiment == exp,
+      condition == cond
+    )
+  
+  cluster_ns <- answers_clustered %>%
+    filter(
+      experiment == exp,
+      condition == cond
+    ) %>%
+    distinct(subj_id, cluster) %>%
+    count(cluster, name = "n_participants")
+
+  # Set the correct features for each experiment
+  feature_order <- if (exp == "Exp 1") {
+    c("Smoothness", "Vertices", "Angle",
+      "Intuition", "Globalness", "Size")
+  } else {
+    c("Smoothness", "Vertices", "Range",
+      "Intuition", "Globalness", "Animal-like", "Size")
+  }
+
+  # Set cluster order
+  clusters <- sort(unique(as.character(dat$cluster)))
+  
+  # Add n to cluster labels
+  cluster_labels_df <- tibble(cluster = clusters) %>%
+    left_join(cluster_ns, by = "cluster") %>%
+    mutate(
+      strip_label = paste0(cluster, " (n = ", n_participants, ")")
+    )
+  
+  cluster_labels <- setNames(
+    cluster_labels_df$strip_label,
+    cluster_labels_df$cluster
+  )
+  
+  dat <- dat %>%
+    mutate(
+      feature = factor(feature, levels = feature_order),
+      cluster = factor(cluster, levels = clusters, labels = cluster_labels[clusters]),
+      coder = factor(coder, levels = c("Human", "AI"))
+    )
+  
+  # Colored cluster headings
+  cluster_colors <- ifelse(
+    grepl("smooth", clusters, ignore.case = TRUE),
+    "#F8766D", "#00BA38"
+  )
+  
+  cluster_fills <- ifelse(
+    grepl("smooth", clusters, ignore.case = TRUE),
+    "#FDE8E6", "#E8F7EC"
+  )
+  cluster_strip <- ggh4x::strip_themed(
+    background_x = ggh4x::elem_list_rect(
+      fill = cluster_fills,
+      colour = rep("black", length(clusters)),
+      linewidth = rep(0.6, length(clusters))
+    ),
+    text_x = ggh4x::elem_list_text(
+      colour = cluster_colors,
+      face = rep("bold", length(clusters)),
+      size = rep(12, length(clusters))
+    )
+  )
+
+  # Figure
+  ggplot(
+    dat,
+    aes(
+      x = feature,
+      y = percentage,
+      fill = feature
+    )
+  ) +
+
+    geom_col(
+      width = 0.65,
+      alpha = 0.65,
+      color = "black",
+      linewidth = 0.4
+    ) +
+
+    geom_errorbar(
+      aes(
+        ymin = ci_lower,
+        ymax = ci_upper
+      ),
+      width = 0.15,
+      linewidth = 0.5,
+      color = "black"
+    ) +
+
+    ggh4x::facet_grid2(
+      rows = vars(coder),
+      cols = vars(cluster),
+      strip = cluster_strip,
+      axes = "x",
+      remove_labels = "x"
+    ) +
+
+    scale_fill_manual(values = feature_cols) +
+
+    scale_y_continuous(
+      breaks = seq(0, 100, 20),
+      limits = c(0, 100),
+      labels = function(x) paste0(x, "%"),
+      expand = expansion(mult = c(0, 0.02))
+    ) +
+
+    labs(
+      x = "Feature mentioned",
+      y = "Participants mentioning feature (%)",
+      title = paste(exp, "—", cond)
+    ) +
+
+    theme_classic(base_size = 14) +
+
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(
+        angle = 35,
+        hjust = 1,
+        size = 10
+      ),
+      panel.spacing = grid::unit(12, "pt"),
+      panel.grid.major.y = element_line(
+        color = "grey92",
+        linewidth = 0.3
+      ),
+      plot.title = element_text(
+        size = 16,
+        face = "bold"
+      )
+    )
+}
+```
+
+```{r}
+p_exp1_curv <- plot_open_answers(
+  "Exp 1",
+  "Curvature instruction"
+)
+
+print(p_exp1_curv)
+```
+
+```{r}
+p_exp1_noinstr <- plot_open_answers(
+  "Exp 1",
+  "No instruction"
+)
+
+print(p_exp1_noinstr)
+```
+
+```{r}
+p_exp2_curv <- plot_open_answers(
+  "Exp 2",
+  "Curvature instruction"
+)
+
+print(p_exp2_curv)
+```
+
+```{r}
+p_exp2_noinstr <- plot_open_answers(
+  "Exp 2",
+  "No instruction"
+)
+
+print(p_exp2_noinstr)
+```
+
+
+# Word Frequencies
+
+```{r}
+library(dplyr)
+library(ggplot2)
+# install.packages('ggwordcloud')
+library(ggwordcloud)
+library(tibble)
+
+word_freq <- tibble(
+  term = c(
+    "sharpness", "curved", "smoothness", "pointiness",
+    "roundness", "straight", "softness", "hard",
+    "corner", "curvature", "curviness", "zigzag",
+    "pointy", "curve", "brash", "harshness",
+    "peaks", "triangle-like", "wave", "jagged",
+    "tips", "continuous", "spikes", "angle",
+    "rigidity"
+  ),
+  frequency = c(
+    19, 13, 7, 7, 6, 6, 4, 2, 2, 2, 2,
+    rep(1, 14)
+  )
+)
+
+# Verify total and inspect table
+stopifnot(sum(word_freq$frequency) == 84)
+
+print(word_freq, n = Inf)
+
+
+
+set.seed(123)
+
+p_wordcloud <- ggplot(
+  word_freq,
+  aes(
+    label = term,
+    size = frequency,
+    color = frequency
+  )
+) +
+  ggwordcloud::geom_text_wordcloud_area(
+    rm_outside = TRUE
+  ) +
+  scale_size_area(
+    max_size = 60
+  ) +
+  scale_color_gradient(
+    low = "#FBC8C4",
+    high = "#D94B42"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "none"
+  )
+
+print(p_wordcloud)
+
+ggsave(
+  "smoothness_wordcloud.png",
+  plot = p_wordcloud,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggwordcloud)
+library(tibble)
+
+vertices_word_freq <- tibble(
+  term = c(
+    "number of bumps",
+    "number of curves",
+    "size",
+    "number of peaks",
+    "number of zigzags",
+    "number of turns",
+    "number of angles",
+    "frequency",
+    "number of lines",
+    "number of lumps",
+    "number of corners",
+    "number of humps",
+    "number of curls",
+    "number of vertices",
+    "number of fluctuations",
+    "number of dips",
+    "number of edges"
+  ),
+
+  frequency = c(
+    13, 10, 9, 6,
+    2, 2, 2, 2, 2,
+    1, 1, 1, 1, 1, 1, 1, 1
+  )
+) %>%
+  mutate(
+    percentage = 100 * frequency / sum(frequency)
+  ) %>%
+  arrange(desc(frequency))
+
+stopifnot(sum(vertices_word_freq$frequency) == 56)
+
+print(vertices_word_freq, n = Inf)
+```
+
+```{r}
+set.seed(123)
+
+vertices_word_freq <- vertices_word_freq %>%
+  mutate(
+    label = case_when(
+      term == "size" ~ "size",
+      term == "frequency" ~ "frequency",
+      TRUE ~ sub("^number of ", "", term)
+    )
+  )
+
+print(vertices_word_freq)
+p_vertices_wordcloud <- ggplot(
+  vertices_word_freq,
+  aes(
+    label = label,
+    size = frequency,
+    color = frequency
+  )
+) +
+  ggwordcloud::geom_text_wordcloud_area(
+    rm_outside = TRUE
+  ) +
+  scale_size_area(
+    max_size = 60
+  ) +
+  scale_color_gradient(
+    low = "#A5E8B7",
+    high = "#008A29"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "none"
+  )
+
+print(p_vertices_wordcloud)
+
+ggsave(
+  "vertices_wordcloud.png",
+  plot = p_vertices_wordcloud,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+print(vertices_word_freq)
+
+p_vertices_wordcloud <- ggplot(
+  vertices_word_freq,
+  aes(
+    label = term,
+    size = frequency,
+    color = frequency
+  )
+) +
+  ggwordcloud::geom_text_wordcloud_area(
+    rm_outside = TRUE
+  ) +
+  scale_size_area(
+    max_size = 60
+  ) +
+  scale_color_gradient(
+    low = "#A5E8B7",
+    high = "#008A29"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "none"
+  )
+
+print(p_vertices_wordcloud)
+
+ggsave(
+  "vertices_wordcloud.png",
+  plot = p_vertices_wordcloud,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+```
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(ggwordcloud)
+library(tibble)
+
+# Frequency table — Angle-related terms (Exp1)
+
+angle_word_freq <- tibble(
+  term = c(
+    "size",
+    "height",
+    "angle",
+    "shape",
+    "steepness",
+    "depth",
+    "shape of curve",
+    "radius",
+    "shallow",
+    "steep",
+    "slope",
+    "angularity",
+    "length",
+    "obtuse",
+    "frequency"
+  ),
+  frequency = c(
+    10, 5, 4, 3, 2, 2,
+    1, 1, 1, 1, 1, 1, 1, 1, 1
+  )
+) %>%
+  mutate(
+    percentage = 100 * frequency / sum(frequency)
+  ) %>%
+  arrange(desc(frequency))
+
+# Check frequencies
+stopifnot(sum(angle_word_freq$frequency) == 35)
+print(angle_word_freq, n = Inf)
+
+
+# Create word cloud
+
+set.seed(123)
+
+p_angle_wordcloud <- ggplot(
+  angle_word_freq,
+  aes(
+    label = term,
+    size = frequency,
+    color = frequency
+  )
+) +
+  ggwordcloud::geom_text_wordcloud_area(
+    rm_outside = TRUE
+  ) +
+  scale_size_area(
+    max_size = 60
+  ) +
+  scale_color_gradient(
+    low = "#BFD6FF",
+    high = "#326BC9"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "none"
+  )
+
+print(p_angle_wordcloud)
+
+
+# Save figure
+
+ggsave(
+  "angle_wordcloud.png",
+  plot = p_angle_wordcloud,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+
+```
+
+# exp2
+```{r}
+
+```
+
