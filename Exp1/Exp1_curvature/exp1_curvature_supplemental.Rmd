@@ -1,0 +1,1424 @@
+---
+title: "Exp1_Curvature_Supplemental_Analysis"
+output: html_document
+date: "2025-12-16"
+---
+
+
+```{r setup, include=FALSE}
+set.seed(4228)
+
+pacman::p_load(tidyverse, tidyr, knitr, lme4, broom, plotly, ggplot2, vegan, mlogit, sandwich, lmtest, pbapply, gmnl, tibble, smacof, ppcor, conflicted)
+library(dplyr)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("lag",    "dplyr")
+conflict_prefer("summarise", "dplyr")
+conflict_prefer("mutate", "dplyr")
+conflicts_prefer(lme4::lmer)
+options(knitr.kable.NA = '')
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load data
+datapath <- 'data/'
+DataFiles <- list.files(path = datapath, pattern = "*.csv", full.names = TRUE)
+
+df_raw_all <- data.frame()
+
+for (k in 1:length(DataFiles)) {
+  df_temp <- read_csv(
+    DataFiles[k],
+    col_types = cols(
+      rt = col_double(),
+      response = col_character(),
+      correct_response = col_character(),
+      correct = col_logical(),
+      block_failed = col_logical(),
+      blocks_failed_total = col_double(),
+      .default = col_guess()
+    ),
+    na = c("", "NA", "null", "NaN")
+  )
+  
+  # Extract subject ID from filename
+  subj_id <- str_match(basename(DataFiles[k]), "Han_curvRep1D_(\\d+)_")[, 2]
+  df_temp$subj_id <- subj_id
+  
+  df_raw_all <- bind_rows(df_raw_all, df_temp)
+}
+
+df_raw_all <- df_raw_all %>% 
+  select(subj_id, total_experiment_time, age, sex, art_experience, strategy_open, rt, stimulus, response, block, block_index, trial_in_block, global_trial_index, trial_kind, pattern, feature_ids, features_triplet, stim_left, stim_middle, stim_right, is_practice, is_catch, correct_response, correct, chosen_index, chosen_stimulus, chosen_nv, chosen_ang, chosen_s, chosen_rot, chosen_curv)
+
+```
+
+```{r}
+# catch trial accuracy for main trials
+# main_catch <- df_raw_all %>%
+#   filter(trial_kind == "catch")
+# 
+# main_catch %>%
+#   group_by(participant) %>%
+#   summarise(
+#     n_catch = n(),
+#     n_correct = sum(correct == TRUE, na.rm = TRUE),
+#     accuracy = mean(correct == TRUE, na.rm = TRUE))
+
+# each participant must get 75% catch trial accuracy min in each block to pass that block
+block_catch_summary <- df_raw_all %>%
+  filter(trial_kind == "catch") %>%
+  group_by(subj_id, block_index) %>%
+  summarise(
+    n_catch = n(),
+    n_correct = sum(correct == TRUE, na.rm = TRUE),
+    acc = n_correct / n_catch,
+    blockUse = if_else(acc >= 0.75, 1, 0),  # 1 if acc >= 75%, else 0
+    .groups = "drop"
+  )
+
+# Count failed blocks per participant and assign subUse flag
+subject_quality <- block_catch_summary %>%
+  group_by(subj_id) %>%
+  summarise(
+    n_failed_blocks = sum(blockUse == 0),  # Count blocks where blockUse = 0
+    subUse = if_else(n_failed_blocks > 3, 0, 1),  # Flag: 0 if >3 failed, else 1
+    .groups = "drop"
+  )
+
+# View results
+subject_quality
+subject_quality %>%
+  count(subUse)
+
+# Add subUse flag to original data frame
+df_raw_all <- df_raw_all %>%
+  left_join(subject_quality %>% select(subj_id, subUse), 
+            by = "subj_id") %>%
+  left_join(block_catch_summary %>% select(subj_id, block_index, blockUse),
+            by = c("subj_id", "block_index"))
+
+```
+
+```{r}
+# Leave only the trials for analysis
+df_trials <- df_raw_all %>%
+  filter(subUse == 1,  # Only subjects with subUse = 1
+         blockUse == 1,
+         rt >= 500,
+         trial_kind %in% c('exp_111', 'exp_221'))  # Only these trial types
+```
+
+```{r}
+# each row = one item in the triad. 
+df_items <- df_trials %>%
+  group_by(subj_id) %>%
+  mutate(triad_id = row_number()) %>%
+  ungroup() %>%
+  select(
+    subj_id, triad_id, chosen_index,
+    stim_left, stim_middle, stim_right
+  ) %>%
+  pivot_longer(
+    cols = c(stim_left, stim_middle, stim_right),
+    names_to = "position",
+    values_to = "stim_path"
+  ) %>%
+  mutate(
+    pos_index = case_when(
+      position == "stim_left"   ~ 0L,
+      position == "stim_middle" ~ 1L,
+      position == "stim_right"  ~ 2L
+    ),
+    choice = as.integer(pos_index == chosen_index),
+    is_chosen = pos_index == chosen_index,
+    nv   = as.integer(str_match(stim_path, "stim_nv(\\d+)_")[,2]),
+    ang  = as.integer(str_match(stim_path, "ang(\\d+)_s")[,2]),
+    sm_s = as.numeric(str_match(stim_path, "s([0-9.]+)_rot")[,2]),
+    sm = case_when(
+      sm_s == 0.0 ~ 0,
+      sm_s == 0.8 ~ 1,
+      sm_s == 1.4 ~ 2,
+      TRUE ~ NA_integer_  # Handle unexpected values
+    )
+  )
+
+head(df_items)
+```
+
+```{r}
+# Step 1: Prep data and extract chosen-non_chosen pairs
+stim_lookup <- df_items %>%
+  select(sm, nv, ang) %>%
+  distinct(sm, nv, ang) %>%
+  arrange(sm, nv, ang) %>%
+  mutate(stim_id = row_number())
+
+stopifnot(nrow(stim_lookup) == 27)
+
+triad_long <- df_items %>%
+  select(subj_id, triad_id, pos_index, is_chosen, sm, nv, ang) %>%
+  left_join(stim_lookup, by = c("sm", "nv", "ang")) %>%
+  rename(stim_id = stim_id)
+
+pairs_chosen_nc <- triad_long %>%
+  group_by(subj_id, triad_id) %>%
+  filter(n() == 3) %>%  # Sanity: exactly 3 stimuli/triad
+  mutate(chosen_flag = is_chosen == 1) %>%
+  summarise(
+    chosen_id = stim_id[chosen_flag],
+    non_ids = list(stim_id[!chosen_flag]),
+    .groups = "drop"
+  ) %>%
+  unnest_longer(non_ids, values_to = "non_id") %>%
+  mutate(
+    low  = pmin(chosen_id, non_id),   # Unordered pair for aggregation
+    high = pmax(chosen_id, non_id)
+  )
+# Output: One row per subj-triple-chosen_non pair (2 per triplet).
+
+```
+
+```{r}
+# Step 2: Compute per-subject D
+pairs_id <- df_items %>%
+  select(subj_id, triad_id, pos_index, is_chosen, sm, nv, ang) %>%
+  inner_join(., ., by = c("subj_id", "triad_id"), suffix = c("_i", "_j")) %>%
+  filter(pos_index_i < pos_index_j) %>%
+  left_join(stim_lookup, by = c("sm_i" = "sm", "nv_i" = "nv", "ang_i" = "ang")) %>%
+  rename(stim_id_i = stim_id) %>%
+  left_join(stim_lookup, by = c("sm_j" = "sm", "nv_j" = "nv", "ang_j" = "ang")) %>%
+  rename(stim_id_j = stim_id) %>%
+  mutate(
+    low  = pmin(stim_id_i, stim_id_j),
+    high = pmax(stim_id_i, stim_id_j)
+  )
+
+D_subj <- pairs_id %>%
+  # Mark chosen-nonchosen relations (analogous to co_group for similarity)
+  mutate(chosen_nc = (is_chosen_i == 1 & is_chosen_j == 0) | 
+                    (is_chosen_j == 1 & is_chosen_i == 0)) %>%
+  group_by(subj_id, low, high) %>%
+  summarise(
+    n_appear    = n(),           # Total appearances (denominator)
+    n_chosen_nc = sum(chosen_nc), # # chosen-nonchosen (numerator, analog n_win)
+    D           = n_chosen_nc / n_appear,  # P(chosen-non | co-occur)
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(D))
+
+
+```
+
+```{r}
+# -------------------------
+# K-means clustering of participants
+# -------------------------
+
+# Compute participant-specific RDMs
+n_items <- 27
+
+participant_rdms <- D_subj %>%
+  group_by(subj_id) %>%
+  summarise(
+    RDM = list({
+      # Initialize dissimilarity matrix (matches your D_mat style)
+      D_mat <- matrix(NA_real_, nrow = n_items, ncol = n_items)
+      rownames(D_mat) <- colnames(D_mat) <- as.character(1:n_items)
+      
+      # Fill D matrix with subject-specific ratios
+      for (k in seq_len(n())) {
+        i <- low[k]
+        j <- high[k]
+        D_mat[i, j] <- D[k]  # <-- D from D_subj (~2 for observed)
+        D_mat[j, i] <- D[k]
+      }
+      diag(D_mat) <- 0
+      D_mat  
+    }),
+    .groups = "drop"
+  )
+
+# We only use the upper triangle (off-diagonal) to avoid redundancy
+get_upper_vec <- function(mat) mat[upper.tri(mat)]
+participant_rdms_vec <- participant_rdms %>%
+  mutate(RDM_vec = map(RDM, get_upper_vec))
+
+subj_ids <- participant_rdms$subj_id
+n_subj <- length(subj_ids)
+```
+
+```{r}
+# -------------------------
+# 1. Prepare data & distances
+# -------------------------
+complete_pairs <- do.call(rbind, participant_rdms_vec$RDM_vec)
+complete_pairs <- complete_pairs[, apply(complete_pairs, 2, function(x) all(!is.na(x)))]
+# complete_pairs <- do.call(rbind, lapply(participant_rdms_vec$RDM_vec, 
+#                                         function(v) replace(v, is.na(v), 0)))
+
+pp_coords <- complete_pairs  
+pp_dist <- dist(pp_coords)   
+
+cat("Data:", nrow(pp_coords), "subjects x", ncol(pp_coords), "pairs\n")
+```
+
+```{r}
+# -------------------------
+# 4. Choose best k & fit final clustering
+# -------------------------
+k_opt <- 2
+km_final <- kmeans(pp_coords, centers = k_opt, nstart = 100)
+
+# Reorder cluster labels so largest = 1
+cluster_sizes <- table(km_final$cluster)
+cluster_order <- as.numeric(names(sort(cluster_sizes, decreasing = TRUE)))
+new_labels <- match(km_final$cluster, cluster_order)
+
+participant_clusters <- tibble(
+  subj_id = subj_ids,
+  cluster = factor(new_labels)
+)
+
+print(table(participant_clusters$cluster))
+```
+
+### SUPPLEMENTAL ANALYSIS
+# RT Analysis
+
+```{r}
+# Boxplot per participant, ordered by median RT
+
+subject_order <- df_trials %>%
+  group_by(subj_id) %>%
+  summarise(
+    median_rt = median(rt, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(median_rt) %>%
+  pull(subj_id)
+
+df_trials %>%
+  mutate(subj_id = factor(subj_id, levels = subject_order)) %>%
+  
+  ggplot(aes(x = subj_id, y = rt)) +
+  geom_boxplot(
+    width = 0.65,
+    outlier.shape = 16,
+    outlier.size = 1.5,
+    outlier.alpha = 0.5) +
+  theme_classic(base_size = 14) +
+  labs(x = "Participant", y = "RT (ms)") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8), 
+        aspect.ratio = 0.8
+  )
+# 3e+05 = 300 sec
+```
+
+# RT by Cluster 
+```{r}
+df_rt_cluster <- df_trials %>%
+  left_join(participant_clusters, by = "subj_id")
+
+rt_by_subject_cluster <- df_rt_cluster %>%
+  group_by(subj_id, cluster) %>%
+  summarise(
+    mean_rt   = mean(rt, na.rm = TRUE),
+    median_rt = median(rt, na.rm = TRUE),
+    sd_rt     = sd(rt, na.rm = TRUE),
+    iqr_rt    = IQR(rt, na.rm = TRUE),
+    .groups = "drop")
+
+# Median RT by cluster boxplots
+ggplot(rt_by_subject_cluster,
+       aes(x = cluster, y = median_rt)) +
+  geom_boxplot(
+    width = 0.5,
+    outlier.shape = NA) +
+  geom_jitter(
+    width = 0.10,
+    size = 2,
+    alpha = 0.7) +
+  theme_classic(base_size = 14) +
+  labs( x = "Cluster", y = "Median RT")
+```
+
+```{r}
+# Preparing trial-level stimulus features
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(ggpubr)
+library(ggh4x)
+
+df_items_rt <- df_trials %>%
+  group_by(subj_id) %>%
+  mutate(triad_id = row_number()) %>%
+  ungroup() %>%
+  select(
+    subj_id, triad_id, trial_kind, rt, chosen_index,
+    stim_left, stim_middle, stim_right
+  ) %>%
+  pivot_longer(
+    cols = c(stim_left, stim_middle, stim_right),
+    names_to = "position",
+    values_to = "stim_path"
+  ) %>%
+  mutate(
+    pos_index = case_when(
+      position == "stim_left"   ~ 0L,
+      position == "stim_middle" ~ 1L,
+      position == "stim_right"  ~ 2L
+    ),
+    is_chosen = pos_index == chosen_index,
+    nv = as.integer(str_match(stim_path, "stim_nv(\\d+)_")[, 2]),
+    ang = as.integer(str_match(stim_path, "ang(\\d+)_s")[, 2]),
+    sm_s = as.numeric(str_match(stim_path, "s([0-9.]+)_rot")[, 2]),
+    sm = case_when(
+      sm_s == 0.0 ~ 0,
+      sm_s == 0.8 ~ 1,
+      sm_s == 1.4 ~ 2,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+```{r}
+# Identifying choice basis for 1/1/1 and 2/2/1 trials
+
+# for 1/1/1 trials: the feature shared by the two non-chosen stimuli 
+# = the feature on which the chosen stimulus is the odd one out 
+# = the one that the participant 'uses' to make that decision
+rt_111 <- df_items_rt %>%
+  filter(trial_kind == "exp_111") %>%
+  group_by(subj_id, triad_id) %>%
+  summarise(
+    rt = first(rt),
+    same_sm  = n_distinct(sm[!is_chosen]) == 1,
+    same_nv  = n_distinct(nv[!is_chosen]) == 1,
+    same_ang = n_distinct(ang[!is_chosen]) == 1,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n_shared = same_sm + same_nv + same_ang,
+    choice_basis = case_when(
+      same_sm  & !same_nv & !same_ang ~ "Smoothness",
+      same_nv  & !same_sm & !same_ang ~ "Vertices",
+      same_ang & !same_sm & !same_nv ~ "Angle",
+      TRUE ~ NA_character_
+    ),
+    choice_basis = factor(
+      choice_basis,
+      levels = c("Smoothness", "Vertices", "Angle")
+    )
+  )
+
+# for 2/2/1 triplets: identify whether the chosen stimulus is an endpoint (unique on one feature) or a bridge (not unique on any feature).
+# does chosen item have a feature value that occurs only once in the triplet?
+# yes --> that feature is the choice_basis
+# no --> it is the 'non-different' item / 'bridge' item and  exclude that trial
+# if an item is uniquely different in number of vertices, then choice_basis = Vertices, etc.
+
+rt_221_all <- df_items_rt %>%
+  filter(trial_kind == "exp_221") %>%
+  group_by(subj_id, triad_id) %>%
+  summarise(
+    rt = first(rt),
+    basis_sm = (
+      n_distinct(sm) == 2 &
+        sum(sm == first(sm[is_chosen])) == 1
+    ),
+    basis_nv = (
+      n_distinct(nv) == 2 &
+        sum(nv == first(nv[is_chosen])) == 1
+    ),
+    basis_ang = (
+      n_distinct(ang) == 2 &
+        sum(ang == first(ang[is_chosen])) == 1
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n_basis = basis_sm + basis_nv + basis_ang,
+    choice_role = case_when(
+      n_basis == 1 ~ "Endpoint",
+      n_basis == 0 ~ "Bridge",
+      TRUE ~ "Check"
+    ),
+    choice_basis = case_when(
+      basis_sm & !basis_nv & !basis_ang ~ "Smoothness",
+      basis_nv & !basis_sm & !basis_ang ~ "Vertices",
+      basis_ang & !basis_sm & !basis_nv ~ "Angle",
+      TRUE ~ NA_character_
+    ),
+    choice_basis = factor(
+      choice_basis,
+      levels = c("Smoothness", "Vertices", "Angle")
+    )
+  )
+
+# excluded bridge choices count
+rt_221_exclusion_counts <- rt_221_all %>%
+  count(choice_role, name = "n_trials")
+
+# exclude bridge-choice trials in RT analysis, use only endpoint-choice trials
+rt_221 <- rt_221_all %>%
+  filter(choice_role == "Endpoint", !is.na(choice_basis))
+```
+
+```{r}
+# Combine trial types and attach participant clusters
+rt_combined <- bind_rows(
+  rt_111 %>%
+    filter(!is.na(choice_basis)) %>%
+    transmute(
+      subj_id = as.character(subj_id),
+      triad_id, rt,
+      choice_basis = as.character(choice_basis),
+      trial_type = "1/1/1"
+    ),
+  rt_221 %>%
+    filter(!is.na(choice_basis)) %>%
+    transmute(
+      subj_id = as.character(subj_id),
+      triad_id, rt,
+      choice_basis = as.character(choice_basis),
+      trial_type = "2/2/1"
+    )
+) %>%
+  left_join(
+    participant_clusters %>%
+      mutate(subj_id = as.character(subj_id)),
+    by = "subj_id"
+  ) %>%
+  mutate(
+    choice_basis = factor(
+      choice_basis,
+      levels = c("Smoothness", "Vertices", "Angle")
+    ),
+    cluster = factor(
+      cluster,
+      levels = c(1, 2),
+      labels = c("NV-dominant", "Smoothness-dominant")
+    )
+  )
+
+# counts for checking the contributions of each trial type
+rt_trial_counts <- rt_combined %>%
+  group_by(cluster, choice_basis, trial_type) %>%
+  summarise(
+    n_participants = n_distinct(subj_id),
+    n_trials = n(),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# # cluster × choice_basis interaction (2x3)
+# Mixed-effects model and statistical comparisons
+# log(RT) = Cluster x Choice Basis + (1 + Choice Basis | Participant)
+
+# Does the relationship between choice basis and RT depend on the participant's cluster?
+# possibility 1) yes. If cluster membership reflects which feature is especially salient to that person, then decisions based on that same feature might be easier/faster. so for the NV dominant cluster, vertices-based choices could be faster, etc.
+# possibility 2) no. the RT differences observed are just driven by features. maybe some physical stimulus differences are simply to detect quickly, lije number of vertices. 
+
+# account for trial type
+
+rt_interaction_data <- rt_combined %>%
+  filter(
+    !is.na(rt), rt > 0,
+    !is.na(cluster), !is.na(choice_basis),
+    !is.na(trial_type)
+  ) %>%
+  mutate(
+    cluster = factor(cluster,
+      levels = c("NV-dominant", "Smoothness-dominant")
+    ),
+    choice_basis = factor(choice_basis,
+      levels = c("Smoothness", "Vertices", "Angle")
+    ),
+    trial_type = factor(trial_type,
+      levels = c("1/1/1", "2/2/1")
+    )
+  )
+
+# Full model: test whether choice-basis RT differences depend on cluster
+rt_interaction_model <- lmer(
+  log(rt) ~ cluster * choice_basis + trial_type + (1 + choice_basis | subj_id),
+  data = rt_interaction_data,
+  REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+
+# no interaction
+rt_additive_model <- lmer(
+  log(rt) ~ cluster + choice_basis + trial_type + (1 + choice_basis | subj_id),
+  data = rt_interaction_data,
+  REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+
+# Likelihood-ratio test of the cluster × choice_basis interaction
+rt_model_comparison <- anova(
+  rt_additive_model, rt_interaction_model, test = "Chisq"
+)
+
+# Holm-corrected comparisons within each cluster
+emm_by_cluster <- emmeans(
+  rt_interaction_model, ~ choice_basis | cluster
+)
+
+pairwise_results <- as.data.frame(
+  pairs(emm_by_cluster, adjust = "holm")
+) %>%
+  separate(
+    contrast,
+    into = c("group1", "group2"),
+    sep = " - ",
+    remove = FALSE
+  ) %>%
+  mutate(
+    stars = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01 ~ "**",
+      p.value < 0.05 ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+    
+rt_model_comparison
+summary(rt_interaction_model)
+pairwise_results
+```
+```{r}
+# Prepare participant medians and significance brackets
+
+# One median RT per participant x choice basis, pooling both trial types
+rt_participant_medians <- rt_interaction_data %>%
+  group_by(subj_id, cluster, choice_basis) %>%
+  summarise(
+    median_rt = median(rt, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+rt_group_medians <- rt_participant_medians %>%
+  group_by(cluster, choice_basis) %>%
+  summarise(
+    mean_of_medians = mean(median_rt),
+    median_of_medians = median(median_rt),
+    n_participants = n(),
+    .groups = "drop"
+  )
+
+sig_brackets_median <- pairwise_results %>%
+  filter(!is.na(p.value), p.value < 0.05)
+
+panel_heights_median <- rt_participant_medians %>%
+  group_by(cluster) %>%
+  summarise(
+    panel_max = max(median_rt, na.rm = TRUE),
+    panel_min = min(median_rt, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    step = pmax(
+      0.12 * (panel_max - panel_min),
+      0.07 * panel_max
+    )
+  )
+
+sig_brackets_median <- sig_brackets_median %>%
+  left_join(panel_heights_median, by = "cluster") %>%
+  group_by(cluster) %>%
+  mutate(
+    y.position = panel_max + row_number() * step
+  ) %>%
+  ungroup()
+
+feature_cols <- c(
+  "Smoothness" = "#F8766D",
+  "Vertices" = "#00BA38",
+  "Angle" = "#619CFF"
+)
+
+cluster_strip <- ggh4x::strip_themed(
+  background_x = ggh4x::elem_list_rect(
+    fill = c("#E8F7EC", "#FDE8E6"),
+    colour = c("black", "black"),
+    linewidth = c(0.6, 0.6)
+  ),
+  text_x = ggh4x::elem_list_text(
+    colour = c("#00BA38", "#F8766D"),
+    face = c("bold", "bold"),
+    size = c(14, 14)
+  )
+)
+```
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+p_median <- ggplot(
+  rt_participant_medians,
+  aes(
+    x = choice_basis,
+    y = median_rt,
+    fill = choice_basis
+  )
+) +
+  geom_violin(
+    width = 0.85,
+    trim = TRUE,
+    alpha = 0.45,
+    color = "black",
+    linewidth = 0.6
+  ) +
+  geom_jitter(
+    width = 0.08,
+    height = 0,
+    size = 2,
+    alpha = 0.45,
+    color = "black"
+  ) +
+  # Horizontal line = median of participant medians
+  # stat_summary(
+  #   fun = median,
+  #   fun.min = median,
+  #   fun.max = median,
+  #   geom = "crossbar",
+  #   width = 0.25,
+  #   fatten = 0,
+  #   color = "black",
+  #   linewidth = 0.7
+  # ) +
+
+  # White diamond = mean of participant medians
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    shape = 23,
+    size = 4,
+    fill = "white",
+    color = "black",
+    stroke = 1
+  ) +
+  ggh4x::facet_wrap2(
+    ~ cluster,
+    strip = cluster_strip
+  ) +
+  scale_fill_manual(values = feature_cols) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0.05, 0.15))
+  ) +
+  labs(
+    x = "Choice basis",
+    y = "Participant median RT (ms)",
+    title = "RT by choice basis and cluster"
+  ) +
+  theme_classic(base_size = 16) +
+  theme(legend.position = "none")
+
+if (nrow(sig_brackets_median) > 0) {
+  p_median <- p_median +
+    ggpubr::stat_pvalue_manual(
+      sig_brackets_median,
+      label = "stars",
+      xmin = "group1",
+      xmax = "group2",
+      y.position = "y.position",
+      tip.length = 0.01,
+      bracket.size = 0.6,
+      size = 6,
+      inherit.aes = FALSE
+    )
+}
+
+print(p_median)
+
+# important: violin plots show participant-level median RTs, but the significance brackets come from the trial-level mixed-effects model fitted to log(RT)
+```
+
+
+
+
+# Choice-basis across blocks
+
+```{r}
+# Prepare block-level choice data
+
+# Attach block number to the combined choice-basis data
+
+trial_block_lookup <- df_trials %>%
+  group_by(subj_id) %>%
+  mutate(triad_id = row_number()) %>%
+  ungroup() %>%
+  transmute(
+    subj_id = as.character(subj_id),
+    triad_id,
+    block = as.integer(str_remove(block, "block_"))
+  )
+
+choice_time <- rt_combined %>%
+  mutate(subj_id = as.character(subj_id)) %>%
+  left_join(
+    trial_block_lookup,
+    by = c("subj_id", "triad_id")
+  )
+
+
+# Choice-basis proportions for each participant in each block
+
+choice_by_block <- choice_time %>%
+  count(
+    subj_id,
+    cluster,
+    block,
+    choice_basis,
+    name = "n_choices"
+  ) %>%
+  group_by(subj_id, cluster, block) %>%
+  tidyr::complete(
+    choice_basis = c("Smoothness", "Vertices", "Angle"),
+    fill = list(n_choices = 0)
+  ) %>%
+  mutate(
+    n_usable = sum(n_choices),
+    proportion = n_choices / n_usable
+  ) %>%
+  ungroup() %>%
+  mutate(
+    choice_basis = factor(
+      choice_basis,
+      levels = c("Smoothness", "Vertices", "Angle")
+    )
+  )
+choice_by_block
+```
+
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+# Mean choice-basis proportion trajectories across blocks, with 95% CI
+
+choice_block_cluster_summary <- choice_by_block %>%
+  group_by(cluster, block, choice_basis) %>%
+  summarise(
+    mean_proportion = mean(proportion, na.rm = TRUE),
+    sd_proportion = sd(proportion, na.rm = TRUE),
+    n = sum(!is.na(proportion)),
+    se = sd_proportion / sqrt(n),
+    ci_lower = mean_proportion - 1.96 * se,
+    ci_upper = mean_proportion + 1.96 * se,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ci_lower = pmax(0, ci_lower),
+    ci_upper = pmin(1, ci_upper)
+  )
+
+# Final choice-basis trajectory plot
+
+p_choice_blocks <- ggplot(
+  choice_block_cluster_summary,
+  aes(
+    x = block,
+    y = mean_proportion,
+    group = choice_basis,
+    color = choice_basis,
+    fill = choice_basis
+  )
+) +
+  geom_ribbon(
+    aes(ymin = ci_lower, ymax = ci_upper),
+    alpha = 0.12,
+    color = NA
+  ) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  ggh4x::facet_wrap2(
+    ~ cluster,
+    strip = cluster_strip
+  ) +
+  scale_color_manual(values = feature_cols) +
+  scale_fill_manual(values = feature_cols) +
+  scale_x_continuous(breaks = 1:9) +
+  scale_y_continuous(
+    limits = c(0, 0.7),
+    breaks = seq(0, 0.7, 0.1),
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  labs(
+    x = "Block",
+    y = "Mean proportion of choices",
+    color = "Choice basis",
+    fill = "Choice basis",
+    title = "Choice-basis patterns across blocks by cluster"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.major.y = element_line(
+      color = "grey90",
+      linewidth = 0.3
+    )
+  )
+
+print(p_choice_blocks)
+```
+```{r eval=FALSE}
+# ================================================================
+# RUN THIS IN THE EXISTING MAIN ANALYSIS SESSION / Rmd
+# ================================================================
+# Required output: a single CSV with exactly two columns:
+#   subj_id,cluster
+# The new Open_Answer_Analysis.Rmd will join that CSV by subj_id.
+#
+# IMPORTANT: The existing open-answer workbooks have 143 distinct
+# participant IDs across BOTH experiments and BOTH conditions.
+# So the object selected here must contain cluster assignments for
+# ALL those participants — not only Experiment 1.
+#
+# Example: use rt_combined only if it covers all four groups.
+# Otherwise bind your Exp 1 and Exp 2 participant-level cluster
+# assignment tables first and assign the result to cluster_source.
+
+library(dplyr)
+library(readr)
+
+cluster_source <- rt_combined  # CHANGE if this omits Experiment 2 or a condition
+
+cluster_lookup <- cluster_source %>%
+  transmute(
+    subj_id = sub("\\.0+$", "", trimws(as.character(subj_id))),
+    cluster = trimws(as.character(cluster))
+  ) %>%
+  filter(!is.na(subj_id), subj_id != "",
+         !is.na(cluster), cluster != "") %>%
+  distinct()
+
+# No participant should have more than one cluster assignment.
+conflicts <- cluster_lookup %>%
+  count(subj_id, name = "n_labels") %>%
+  filter(n_labels > 1)
+if (nrow(conflicts) > 0) {
+  print(conflicts)
+  stop("Conflicting clusters assigned to the same participant ID.")
+}
+
+message("Number of unique participants exported: ", nrow(cluster_lookup))
+
+write_csv(cluster_lookup, "participant_cluster_lookup.csv")
+# Put participant_cluster_lookup.csv in the SAME folder as
+# Open_Answer_Analysis.Rmd and the two Excel coding workbooks.
+```
+
+
+# Sensitivity Analysis
+```{r}
+# Prepare sensitivity datasets
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+library(emmeans)
+library(ggh4x)
+
+# Reuse choice-basis classifications from the RT analysis.
+# Bridge choices are included in the sensitivity analysis. they're coded as 0 for feature selection, so when participant selects a bridge in 2/2/1 trial, the relevant feature is coded as not chosen (0).
+
+sensitivity_choice_basis <- bind_rows(
+  rt_111 %>%
+    transmute(
+      subj_id = as.character(subj_id),
+      triad_id,
+      trial_type = "1/1/1",
+      choice_basis = as.character(choice_basis)
+    ),
+  rt_221_all %>%
+    transmute(
+      subj_id = as.character(subj_id),
+      triad_id,
+      trial_type = "2/2/1",
+      choice_basis = as.character(choice_basis)
+    )
+) %>%
+  mutate(
+    trial_type = factor(
+      trial_type, levels = c("1/1/1", "2/2/1")
+    )
+  )
+
+stopifnot(
+  !anyDuplicated(
+    sensitivity_choice_basis[c("subj_id", "triad_id")]
+  )
+)
+
+# Participant cluster labels
+sensitivity_cluster_lookup <- participant_clusters %>%
+  transmute(
+    subj_id = as.character(subj_id),
+    cluster = factor(
+      cluster,
+      levels = c(1, 2),
+      labels = c("NV-dominant", "Smoothness-dominant")
+    )
+  )
+
+stopifnot(!anyDuplicated(sensitivity_cluster_lookup$subj_id))
+
+# Map vertex counts and angles to categorical levels 0, 1, 2.
+# Smoothness is already coded 0, 1, 2 in df_items_rt.
+
+nv_values <- sort(unique(na.omit(df_items_rt$nv)))
+ang_values <- sort(unique(na.omit(df_items_rt$ang)))
+
+stopifnot(
+  length(nv_values) == 3,
+  length(ang_values) == 3
+)
+
+# Identify which levels appeared in each trial
+
+sensitivity_trial_levels <- df_items_rt %>%
+  mutate(
+    subj_id = as.character(subj_id),
+    nv_level = match(nv, nv_values) - 1L,
+    ang_level = match(ang, ang_values) - 1L
+  ) %>%
+  group_by(subj_id, triad_id, trial_kind) %>%
+  summarise(
+    n_sm_levels = n_distinct(sm),
+    sm_min = min(sm),
+    sm_max = max(sm),
+
+    n_nv_levels = n_distinct(nv_level),
+    nv_min = min(nv_level),
+    nv_max = max(nv_level),
+
+    n_ang_levels = n_distinct(ang_level),
+    ang_min = min(ang_level),
+    ang_max = max(ang_level),
+
+    .groups = "drop"
+  ) %>%
+  mutate(
+    sm_level_category = case_when(
+      n_sm_levels == 1 ~ "Constant",
+      n_sm_levels == 2 & sm_min == 0 & sm_max == 1 ~ "0-1",
+      n_sm_levels == 2 & sm_min == 1 & sm_max == 2 ~ "1-2",
+      n_sm_levels == 2 & sm_min == 0 & sm_max == 2 ~ "0-2",
+      n_sm_levels == 3 ~ "Three levels",
+      TRUE ~ NA_character_
+    ),
+
+    nv_level_category = case_when(
+      n_nv_levels == 1 ~ "Constant",
+      n_nv_levels == 2 & nv_min == 0 & nv_max == 1 ~ "0-1",
+      n_nv_levels == 2 & nv_min == 1 & nv_max == 2 ~ "1-2",
+      n_nv_levels == 2 & nv_min == 0 & nv_max == 2 ~ "0-2",
+      n_nv_levels == 3 ~ "Three levels",
+      TRUE ~ NA_character_
+    ),
+
+    ang_level_category = case_when(
+      n_ang_levels == 1 ~ "Constant",
+      n_ang_levels == 2 & ang_min == 0 & ang_max == 1 ~ "0-1",
+      n_ang_levels == 2 & ang_min == 1 & ang_max == 2 ~ "1-2",
+      n_ang_levels == 2 & ang_min == 0 & ang_max == 2 ~ "0-2",
+      n_ang_levels == 3 ~ "Three levels",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Combine level categories, choices, and cluster labels
+
+sensitivity_trials <- sensitivity_trial_levels %>%
+  left_join(
+    sensitivity_choice_basis,
+    by = c("subj_id", "triad_id")
+  ) %>%
+  left_join(
+    sensitivity_cluster_lookup,
+    by = "subj_id"
+  ) %>%
+  mutate(
+    sm_chosen = as.integer(
+      !is.na(choice_basis) & choice_basis == "Smoothness"
+    ),
+    nv_chosen = as.integer(
+      !is.na(choice_basis) & choice_basis == "Vertices"
+    ),
+    ang_chosen = as.integer(
+      !is.na(choice_basis) & choice_basis == "Angle"
+    )
+  )
+
+# Retain trials where the relevant feature varies
+# between exactly two categorical levels.
+
+level_order <- c("0-1", "1-2", "0-2")
+
+sm_sensitivity_data <- sensitivity_trials %>%
+  filter(sm_level_category %in% level_order) %>%
+  mutate(
+    sm_level_category = factor(
+      sm_level_category, levels = level_order
+    )
+  )
+
+nv_sensitivity_data <- sensitivity_trials %>%
+  filter(nv_level_category %in% level_order) %>%
+  mutate(
+    nv_level_category = factor(
+      nv_level_category, levels = level_order
+    )
+  )
+
+ang_sensitivity_data <- sensitivity_trials %>%
+  filter(ang_level_category %in% level_order) %>%
+  mutate(
+    ang_level_category = factor(
+      ang_level_category, levels = level_order
+    )
+  )
+
+# Model datasets
+sm_model_data <- sm_sensitivity_data
+nv_model_data <- nv_sensitivity_data
+ang_model_data <- ang_sensitivity_data
+
+# Verify that cluster and trial type are available for modeling
+stopifnot(
+  !anyNA(sm_model_data$cluster),
+  !anyNA(sm_model_data$trial_type),
+  !anyNA(nv_model_data$cluster),
+  !anyNA(nv_model_data$trial_type),
+  !anyNA(ang_model_data$cluster),
+  !anyNA(ang_model_data$trial_type)
+)
+
+# Participant-level proportions for the three plots
+sm_sensitivity_cluster <- sm_model_data %>%
+  group_by(subj_id, cluster, sm_level_category) %>%
+  summarise(
+    n_presented = n(),
+    n_sm_chosen = sum(sm_chosen),
+    proportion = n_sm_chosen / n_presented,
+    .groups = "drop"
+  )
+
+nv_sensitivity_cluster <- nv_model_data %>%
+  group_by(subj_id, cluster, nv_level_category) %>%
+  summarise(
+    n_presented = n(),
+    n_nv_chosen = sum(nv_chosen),
+    proportion = n_nv_chosen / n_presented,
+    .groups = "drop"
+  )
+
+ang_sensitivity_cluster <- ang_model_data %>%
+  group_by(subj_id, cluster, ang_level_category) %>%
+  summarise(
+    n_presented = n(),
+    n_ang_chosen = sum(ang_chosen),
+    proportion = n_ang_chosen / n_presented,
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Fit the three sensitivity models
+# Binomial GLMs, controlling for trial (type 1/1/1 or 2/2/1)
+# logit(P(feature chosen)) = Cluster x Level Comparison + Trial Type + (1 | Participant)
+
+# SMOOTHNESS
+sm_sensitivity_model <- glmer(
+  sm_chosen ~ cluster * sm_level_category +
+    trial_type + (1 | subj_id),
+  data = sm_model_data,
+  family = binomial,
+  control = glmerControl(optimizer = "bobyqa")
+)
+
+# VERTICES
+nv_sensitivity_model <- glmer(
+  nv_chosen ~ cluster * nv_level_category +
+    trial_type + (1 | subj_id),
+  data = nv_model_data,
+  family = binomial,
+  control = glmerControl(optimizer = "bobyqa")
+)
+
+# ANGLE
+ang_sensitivity_model <- glmer(
+  ang_chosen ~ cluster * ang_level_category +
+    trial_type + (1 | subj_id),
+  data = ang_model_data,
+  family = binomial,
+  control = glmerControl(optimizer = "bobyqa")
+)
+
+# Estimated marginal means within each cluster
+sm_emm <- emmeans(
+  sm_sensitivity_model, ~ sm_level_category | cluster
+)
+
+nv_emm <- emmeans(
+  nv_sensitivity_model, ~ nv_level_category | cluster
+)
+
+ang_emm <- emmeans(
+  ang_sensitivity_model, ~ ang_level_category | cluster
+)
+```
+
+```{r}
+# Prepare Holm-corrected comparisons and significance brackets
+
+prepare_sensitivity_brackets <- function(emm) {
+
+  comparisons <- list(
+    "0-1 vs 1-2" = c(1, -1, 0),
+    "1-2 vs 0-2" = c(0, 1, -1),
+    "0-1 vs 0-2" = c(1, 0, -1)
+  )
+
+  positions <- tibble(
+    contrast = names(comparisons),
+    xmin = c(1, 2, 1),
+    xmax = c(2, 3, 3),
+    y.position = c(1.05, 1.14, 1.23)
+  )
+
+  pairwise <- as.data.frame(
+    contrast(
+      emm,
+      method = comparisons,
+      adjust = "holm"
+    )
+  ) %>%
+    left_join(positions, by = "contrast") %>%
+    mutate(
+      stars = case_when(
+        !is.na(p.value) & p.value < 0.001 ~ "***",
+        !is.na(p.value) & p.value < 0.01 ~ "**",
+        !is.na(p.value) & p.value < 0.05 ~ "*",
+        TRUE ~ "ns"
+      )
+    )
+
+  stopifnot(
+    !anyNA(pairwise$xmin),
+    !anyNA(pairwise$xmax),
+    !anyNA(pairwise$y.position)
+  )
+
+  significant <- pairwise %>%
+    filter(!is.na(p.value), p.value < 0.05)
+
+  # Horizontal brackets and vertical tips
+  lines <- bind_rows(
+    significant %>%
+      transmute(
+        cluster,
+        x = xmin, xend = xmax,
+        y = y.position, yend = y.position
+      ),
+
+    significant %>%
+      transmute(
+        cluster,
+        x = xmin, xend = xmin,
+        y = y.position - 0.02, yend = y.position
+      ),
+
+    significant %>%
+      transmute(
+        cluster,
+        x = xmax, xend = xmax,
+        y = y.position - 0.02, yend = y.position
+      )
+  )
+
+  # Significance stars
+  labels <- significant %>%
+    transmute(
+      cluster,
+      x = (xmin + xmax) / 2,
+      y = y.position + 0.035,
+      stars
+    )
+
+  list(
+    pairwise = pairwise,
+    significant = significant,
+    lines = lines,
+    labels = labels
+  )
+}
+
+# Apply to each feature
+sm_brackets <- prepare_sensitivity_brackets(sm_emm)
+nv_brackets <- prepare_sensitivity_brackets(nv_emm)
+ang_brackets <- prepare_sensitivity_brackets(ang_emm)
+
+# Retain named statistical results
+sm_pairwise <- sm_brackets$pairwise
+nv_pairwise <- nv_brackets$pairwise
+ang_pairwise <- ang_brackets$pairwise
+
+sm_sig_brackets <- sm_brackets$significant
+nv_sig_brackets <- nv_brackets$significant
+ang_sig_brackets <- ang_brackets$significant
+
+# Brackets and labels for plotting
+sm_lines <- sm_brackets$lines
+nv_lines <- nv_brackets$lines
+ang_lines <- ang_brackets$lines
+
+sm_labels <- sm_brackets$labels
+nv_labels <- nv_brackets$labels
+ang_labels <- ang_brackets$labels
+
+sm_pairwise
+nv_pairwise
+ang_pairwise
+```
+
+```{r}
+# Shared plotting function for Smoothness, Vertices, and Angle
+
+plot_sensitivity <- function(
+    subject_data,
+    level_column,
+    feature,
+    bracket_lines,
+    bracket_labels) {
+
+  ggplot(
+    subject_data,
+    aes(
+      x = .data[[level_column]],
+      y = proportion
+    )
+  ) +
+
+    geom_boxplot(
+      width = 0.5,
+      outlier.shape = NA,
+      fill = "grey85"
+    ) +
+
+    geom_jitter(
+      width = 0.08,
+      height = 0,
+      size = 2,
+      alpha = 0.5
+    ) +
+
+    # White diamond = mean of participant proportions
+    stat_summary(
+      fun = mean,
+      geom = "point",
+      shape = 23,
+      size = 4,
+      fill = "white",
+      color = "black"
+    ) +
+
+    # Significance brackets
+    geom_segment(
+      data = bracket_lines,
+      aes(
+        x = x, xend = xend,
+        y = y, yend = yend
+      ),
+      inherit.aes = FALSE,
+      linewidth = 0.6
+    ) +
+
+    # Significance stars
+    geom_text(
+      data = bracket_labels,
+      aes(
+        x = x,
+        y = y,
+        label = stars
+      ),
+      inherit.aes = FALSE,
+      size = 5
+    ) +
+
+    ggh4x::facet_wrap2(
+      ~ cluster,
+      strip = cluster_strip
+    ) +
+
+    scale_y_continuous(
+      breaks = seq(0, 1, 0.2)
+    ) +
+
+    coord_cartesian(
+      ylim = c(0, 1.33)
+    ) +
+
+    theme_classic(base_size = 14) +
+
+    labs(
+      x = paste(feature, "level comparison"),
+      y = paste0(
+        "Proportion of ",
+        tolower(feature),
+        "-based choices"
+      ),
+      title = paste(
+        feature,
+        "sensitivity by participant cluster"
+      )
+    )
+}
+```
+
+```{r sensitivity-smoothness-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=5.5}
+p_sm_sig <- plot_sensitivity(
+  sm_sensitivity_cluster,
+  "sm_level_category",
+  "Smoothness",
+  sm_lines,
+  sm_labels
+)
+
+print(p_sm_sig)
+```
+
+```{r sensitivity-angle-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=5.5}
+p_ang_sig <- plot_sensitivity(
+  ang_sensitivity_cluster,
+  "ang_level_category",
+  "Angle",
+  ang_lines,
+  ang_labels
+)
+
+print(p_ang_sig)
+```
+
+```{r sensitivity-vertices-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=5.5}
+p_nv_sig <- plot_sensitivity(
+  nv_sensitivity_cluster,
+  "nv_level_category",
+  "Vertices",
+  nv_lines,
+  nv_labels
+)
+
+print(p_nv_sig)
+```
+```{r}
+# The boxplots show participant-level proportions pooled across trial types.
+# The p-values come from binomial mixed-effects models using individual trials and adjusting for trial type.
+```
