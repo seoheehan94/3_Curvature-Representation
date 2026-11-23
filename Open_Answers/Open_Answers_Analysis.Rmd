@@ -337,14 +337,6 @@ mention_rates <- mention_rates %>%
     ci_upper = 100 * pmin(1, center + half_width)
   ) %>%
   select(-denominator, -center, -half_width)
-
-# Save descriptive results
-dir.create("open_answer_outputs", showWarnings = FALSE)
-
-write_csv(
-  mention_rates,
-  "open_answer_outputs/mention_rates.csv"
-)
 ```
 
 ```{r}
@@ -616,284 +608,221 @@ print(p_exp2_noinstr)
 ```
 
 
-# Word Frequencies
+# Word Frequencies and Word Clouds
 
-```{r}
+The following six word clouds use the revised term lists. Size-related terms have been
+removed from the submitted lists; other counts are preserved exactly as provided.
+Word sizes represent raw frequencies; percentages are calculated relative to the revised
+list for each feature. The plots above (feature mention rates) are unchanged.
+
+```{r word-frequency-tables}
 library(dplyr)
 library(ggplot2)
-# install.packages('ggwordcloud')
 library(ggwordcloud)
 library(tibble)
 
-word_freq <- tibble(
-  term = c(
-    "sharpness", "curved", "smoothness", "pointiness",
-    "roundness", "straight", "softness", "hard",
-    "corner", "curvature", "curviness", "zigzag",
-    "pointy", "curve", "brash", "harshness",
-    "peaks", "triangle-like", "wave", "jagged",
-    "tips", "continuous", "spikes", "angle",
-    "rigidity"
-  ),
-  frequency = c(
-    19, 13, 7, 7, 6, 6, 4, 2, 2, 2, 2,
-    rep(1, 14)
-  )
+# Convert named frequency vectors to tidy, percentage-adjusted tables
+make_word_freq <- function(counts) {
+  tibble(term = names(counts), frequency = as.integer(unname(counts))) %>%
+    arrange(desc(frequency), term) %>%
+    mutate(percentage = 100 * frequency / sum(frequency))
+}
+
+# EXP1 SMOOTHNESS — 84 total mentions
+word_freq <- make_word_freq(c(
+  "sharpness" = 19,
+  "curved" = 13,
+  "pointiness" = 7,
+  "smoothness" = 7,
+  "roundness" = 6,
+  "straight" = 6,
+  "softness" = 4,
+  "corner" = 2,
+  "curvature" = 2,
+  "hard" = 2,
+  "angle" = 1,
+  "brash" = 1,
+  "continuous" = 1,
+  "curve" = 1,
+  "curviness" = 1,
+  "curvy" = 1,
+  "harshness" = 1,
+  "jagged" = 1,
+  "peaks" = 1,
+  "pointy" = 1,
+  "rigidity" = 1,
+  "spikes" = 1,
+  "tips" = 1,
+  "triangle-like" = 1,
+  "wave" = 1,
+  "zigzag" = 1
+))
+
+# EXP1 VERTICES — 47 total mentions
+vertices_word_freq <- make_word_freq(c(
+  "number of bumps" = 13,
+  "number of curves" = 10,
+  "number of peaks" = 6,
+  "frequency" = 2,
+  "number of angles" = 2,
+  "number of lines" = 2,
+  "number of turns" = 2,
+  "number of zigzags" = 2,
+  "number of corners" = 1,
+  "number of curls" = 1,
+  "number of dips" = 1,
+  "number of edges" = 1,
+  "number of fluctuations" = 1,
+  "number of humps" = 1,
+  "number of lumps" = 1,
+  "number of vertices" = 1
+))
+
+# EXP1 ANGLE — 25 total mentions
+angle_word_freq <- make_word_freq(c(
+  "height" = 5,
+  "angle" = 4,
+  "shape" = 3,
+  "depth" = 2,
+  "steepness" = 2,
+  "angularity" = 1,
+  "frequency" = 1,
+  "length" = 1,
+  "obtuse" = 1,
+  "radius" = 1,
+  "shallow" = 1,
+  "shape of curve" = 1,
+  "slope" = 1,
+  "steep" = 1
+))
+
+# EXP2 SMOOTHNESS — 94 total mentions
+exp2_smoothness_word_freq <- make_word_freq(c(
+  "sharp" = 23,
+  "round" = 13,
+  "pointy" = 7,
+  "smooth" = 7,
+  "spikiness" = 7,
+  "curvy" = 6,
+  "curved" = 4,
+  "straight" = 4,
+  "soft" = 3,
+  "square" = 3,
+  "angles" = 2,
+  "circular" = 2,
+  "blocky" = 1,
+  "blunt" = 1,
+  "defined" = 1,
+  "edges" = 1,
+  "flat edges" = 1,
+  "fluidity" = 1,
+  "hard" = 1,
+  "harsh" = 1,
+  "lines" = 1,
+  "loop" = 1,
+  "ridged" = 1,
+  "roundness" = 1,
+  "sharpness" = 1
+))
+
+# EXP2 VERTICES — 15 total mentions
+exp2_vertices_word_freq <- make_word_freq(c(
+  "number of edges" = 3,
+  "number of curves" = 2,
+  "number of spikes" = 2,
+  "amount of points" = 1,
+  "complexity" = 1,
+  "frequency of peaks" = 1,
+  "number of angles" = 1,
+  "number of bumps" = 1,
+  "number of grooves" = 1,
+  "number of loops" = 1,
+  "number of protrusions" = 1
+))
+
+# EXP2 RANGE — 4 total mentions
+exp2_range_word_freq <- make_word_freq(c(
+  "circular" = 1,
+  "complexity" = 1,
+  "height of spikes" = 1,
+  "intensity of peaks" = 1
+))
+
+# Ensure copied frequency lists sum to the expected number of mentions
+stopifnot(
+  sum(word_freq$frequency) == 84,
+  sum(vertices_word_freq$frequency) == 47,
+  sum(angle_word_freq$frequency) == 25,
+  sum(exp2_smoothness_word_freq$frequency) == 94,
+  sum(exp2_vertices_word_freq$frequency) == 15,
+  sum(exp2_range_word_freq$frequency) == 4
 )
 
-# Verify total and inspect table
-stopifnot(sum(word_freq$frequency) == 84)
-
+# Inspect each frequency table and revised percentages
 print(word_freq, n = Inf)
-
-
-
-set.seed(123)
-
-p_wordcloud <- ggplot(
-  word_freq,
-  aes(
-    label = term,
-    size = frequency,
-    color = frequency
-  )
-) +
-  ggwordcloud::geom_text_wordcloud_area(
-    rm_outside = TRUE
-  ) +
-  scale_size_area(
-    max_size = 60
-  ) +
-  scale_color_gradient(
-    low = "#FBC8C4",
-    high = "#D94B42"
-  ) +
-  theme_void() +
-  theme(
-    legend.position = "none"
-  )
-
-print(p_wordcloud)
-
-ggsave(
-  "smoothness_wordcloud.png",
-  plot = p_wordcloud,
-  width = 10,
-  height = 6,
-  dpi = 300
-)
-```
-
-```{r}
-library(dplyr)
-library(ggplot2)
-library(ggwordcloud)
-library(tibble)
-
-vertices_word_freq <- tibble(
-  term = c(
-    "number of bumps",
-    "number of curves",
-    "size",
-    "number of peaks",
-    "number of zigzags",
-    "number of turns",
-    "number of angles",
-    "frequency",
-    "number of lines",
-    "number of lumps",
-    "number of corners",
-    "number of humps",
-    "number of curls",
-    "number of vertices",
-    "number of fluctuations",
-    "number of dips",
-    "number of edges"
-  ),
-
-  frequency = c(
-    13, 10, 9, 6,
-    2, 2, 2, 2, 2,
-    1, 1, 1, 1, 1, 1, 1, 1
-  )
-) %>%
-  mutate(
-    percentage = 100 * frequency / sum(frequency)
-  ) %>%
-  arrange(desc(frequency))
-
-stopifnot(sum(vertices_word_freq$frequency) == 56)
-
 print(vertices_word_freq, n = Inf)
-```
-
-```{r}
-set.seed(123)
-
-vertices_word_freq <- vertices_word_freq %>%
-  mutate(
-    label = case_when(
-      term == "size" ~ "size",
-      term == "frequency" ~ "frequency",
-      TRUE ~ sub("^number of ", "", term)
-    )
-  )
-
-print(vertices_word_freq)
-p_vertices_wordcloud <- ggplot(
-  vertices_word_freq,
-  aes(
-    label = label,
-    size = frequency,
-    color = frequency
-  )
-) +
-  ggwordcloud::geom_text_wordcloud_area(
-    rm_outside = TRUE
-  ) +
-  scale_size_area(
-    max_size = 60
-  ) +
-  scale_color_gradient(
-    low = "#A5E8B7",
-    high = "#008A29"
-  ) +
-  theme_void() +
-  theme(
-    legend.position = "none"
-  )
-
-print(p_vertices_wordcloud)
-
-ggsave(
-  "vertices_wordcloud.png",
-  plot = p_vertices_wordcloud,
-  width = 10,
-  height = 6,
-  dpi = 300
-)
-print(vertices_word_freq)
-
-p_vertices_wordcloud <- ggplot(
-  vertices_word_freq,
-  aes(
-    label = term,
-    size = frequency,
-    color = frequency
-  )
-) +
-  ggwordcloud::geom_text_wordcloud_area(
-    rm_outside = TRUE
-  ) +
-  scale_size_area(
-    max_size = 60
-  ) +
-  scale_color_gradient(
-    low = "#A5E8B7",
-    high = "#008A29"
-  ) +
-  theme_void() +
-  theme(
-    legend.position = "none"
-  )
-
-print(p_vertices_wordcloud)
-
-ggsave(
-  "vertices_wordcloud.png",
-  plot = p_vertices_wordcloud,
-  width = 10,
-  height = 6,
-  dpi = 300
-)
-```
-
-```{r}
-
-library(dplyr)
-library(ggplot2)
-library(ggwordcloud)
-library(tibble)
-
-# Frequency table — Angle-related terms (Exp1)
-
-angle_word_freq <- tibble(
-  term = c(
-    "size",
-    "height",
-    "angle",
-    "shape",
-    "steepness",
-    "depth",
-    "shape of curve",
-    "radius",
-    "shallow",
-    "steep",
-    "slope",
-    "angularity",
-    "length",
-    "obtuse",
-    "frequency"
-  ),
-  frequency = c(
-    10, 5, 4, 3, 2, 2,
-    1, 1, 1, 1, 1, 1, 1, 1, 1
-  )
-) %>%
-  mutate(
-    percentage = 100 * frequency / sum(frequency)
-  ) %>%
-  arrange(desc(frequency))
-
-# Check frequencies
-stopifnot(sum(angle_word_freq$frequency) == 35)
 print(angle_word_freq, n = Inf)
+print(exp2_smoothness_word_freq, n = Inf)
+print(exp2_vertices_word_freq, n = Inf)
+print(exp2_range_word_freq, n = Inf)
+```
 
+## Word clouds (Experiment 1 and Experiment 2)
 
-# Create word cloud
-
-set.seed(123)
-
-p_angle_wordcloud <- ggplot(
-  angle_word_freq,
-  aes(
-    label = term,
-    size = frequency,
-    color = frequency
-  )
-) +
-  ggwordcloud::geom_text_wordcloud_area(
-    rm_outside = TRUE
-  ) +
-  scale_size_area(
-    max_size = 60
-  ) +
-  scale_color_gradient(
-    low = "#BFD6FF",
-    high = "#326BC9"
-  ) +
-  theme_void() +
-  theme(
-    legend.position = "none"
-  )
-
-print(p_angle_wordcloud)
-
-
-# Save figure
-
-ggsave(
-  "angle_wordcloud.png",
-  plot = p_angle_wordcloud,
-  width = 10,
-  height = 6,
-  dpi = 300
+```{r plot-six-wordclouds, fig.width=10, fig.height=6}
+# One plotting function keeps formatting consistent across all six clouds.
+dir.create(
+  "open_answer_outputs/figures",
+  recursive = TRUE,
+  showWarnings = FALSE
 )
 
+plot_wordcloud <- function(dat, low, high, filename, shorten_number_of = FALSE) {
+  dat <- dat %>%
+    mutate(label = if (shorten_number_of) sub("^number of ", "", term) else term)
+
+  set.seed(123)
+  p <- ggplot(dat, aes(label = label, size = frequency, color = frequency)) +
+    ggwordcloud::geom_text_wordcloud_area(rm_outside = TRUE) +
+    scale_size_area(max_size = 60) +
+    scale_color_gradient(low = low, high = high) +
+    theme_void() +
+    theme(legend.position = "none")
+
+  print(p)
+  ggsave(
+    filename = file.path("open_answer_outputs", "figures", filename),
+    plot = p,
+    width = 10,
+    height = 6,
+    dpi = 300
+  )
+  invisible(p)
+}
+
+# Exp 1 — retains original output names
+p_wordcloud <- plot_wordcloud(
+  word_freq, "#FBC8C4", "#D94B42", "exp1_smoothness_wordcloud.png"
+)
+p_vertices_wordcloud <- plot_wordcloud(
+  vertices_word_freq, "#A5E8B7", "#008A29", "exp1_vertices_wordcloud.png",
+  shorten_number_of = TRUE
+)
+p_angle_wordcloud <- plot_wordcloud(
+  angle_word_freq, "#BFD6FF", "#326BC9", "exp1_angle_wordcloud.png"
+)
+
+# Exp 2 — new figures
+p_exp2_smoothness_wordcloud <- plot_wordcloud(
+  exp2_smoothness_word_freq, "#FBC8C4", "#D94B42",
+  "exp2_smoothness_wordcloud.png"
+)
+p_exp2_vertices_wordcloud <- plot_wordcloud(
+  exp2_vertices_word_freq, "#A5E8B7", "#008A29",
+  "exp2_vertices_wordcloud.png", shorten_number_of = TRUE
+)
+p_exp2_range_wordcloud <- plot_wordcloud(
+  exp2_range_word_freq, "#BFD6FF", "#326BC9",
+  "exp2_range_wordcloud.png"
+)
 ```
-
-# exp2
-```{r}
-
-```
-
