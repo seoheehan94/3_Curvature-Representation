@@ -710,18 +710,50 @@ p_exp2_noinstr <- plot_open_answers(
 print(p_exp2_noinstr)
 ```
 
-```{r}
+
+```{r exp3-human-mention-plots, fig.width=11, fig.height=5}
+
+# Experiment 3 — Human coding only
+
+dir.create(
+  "open_answer_outputs/figures",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+# Curvature instruction
 p_exp3_curv <- plot_open_answers(
   "Exp 3", "Curvature instruction"
 )
-if (!is.null(p_exp3_curv)) print(p_exp3_curv)
-```
 
-```{r}
+if (!is.null(p_exp3_curv)) {
+  print(p_exp3_curv)
+
+  ggsave(
+    "open_answer_outputs/figures/exp3_curvature_mention_rates.png",
+    plot = p_exp3_curv,
+    width = 11,
+    height = 5,
+    dpi = 300
+  )
+}
+
+# No instruction
 p_exp3_noinstr <- plot_open_answers(
   "Exp 3", "No instruction"
 )
-if (!is.null(p_exp3_noinstr)) print(p_exp3_noinstr)
+
+if (!is.null(p_exp3_noinstr)) {
+  print(p_exp3_noinstr)
+
+  ggsave(
+    "open_answer_outputs/figures/exp3_noinstr_mention_rates.png",
+    plot = p_exp3_noinstr,
+    width = 11,
+    height = 5,
+    dpi = 300
+  )
+}
 ```
 
 
