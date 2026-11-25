@@ -686,7 +686,7 @@ cluster_strip <- ggh4x::strip_themed(
 )
 ```
 
-```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+```{r message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
 p_median <- ggplot(
   rt_participant_medians,
   aes(
@@ -825,7 +825,7 @@ choice_by_block
 ```
 
 
-```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+```{r message=FALSE, warning=FALSE, fig.width=8, fig.height=6}
 # Mean choice-basis proportion trajectories across blocks, with 95% CI
 
 choice_block_cluster_summary <- choice_by_block %>%
@@ -1410,7 +1410,7 @@ plot_sensitivity <- function(
 }
 ```
 
-```{r sensitivity-smoothness-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=5.5}
+```{r sensitivity-smoothness-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=5.5}
 p_sm_sig <- plot_sensitivity(
   sm_sensitivity_cluster,
   "sm_level_category",
@@ -1422,7 +1422,7 @@ p_sm_sig <- plot_sensitivity(
 print(p_sm_sig)
 ```
 
-```{r sensitivity-range-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=5.5}
+```{r sensitivity-range-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=5.5}
 p_range_sig <- plot_sensitivity(
   range_sensitivity_cluster,
   "range_level_category",
@@ -1434,7 +1434,7 @@ p_range_sig <- plot_sensitivity(
 print(p_range_sig)
 ```
 
-```{r sensitivity-vertices-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=5.5}
+```{r sensitivity-vertices-plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=5.5}
 p_nv_sig <- plot_sensitivity(
   nv_sensitivity_cluster,
   "nv_level_category",
