@@ -1,6 +1,6 @@
 ---
 title: "Curvature open-answer analysis by participant cluster"
-subtitle: "Human and AI coding (Experiments 1–2); human coding only (Experiment 3)"
+subtitle: "Human and LLM coding, separated by experiment and instruction condition"
 author: ""
 date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
@@ -21,20 +21,18 @@ This file reads the two annotated workbooks independently, attaches **one cluste
 5. Experiment 3 — Curvature instruction
 6. Experiment 3 — No instruction
 
-For Experiments 1 and 2, **human and AI coding are shown separately**. Experiment 3 currently uses **human coding only**; the AI slot is reserved for future data. The feature-mention analysis includes the coded indicators (including Size and the animal-like indicator for Experiments 2 and 3). **Priority 1–3** and **notes** are reserved for later analyses. Missing indicator codes are preserved as `NA`, not recoded as zero.
+For each group across Experiments 1, 2, and 3, **human and LLM coding are shown separately** and compared. The feature-mention analysis includes the coded indicators (including Size and the animal-like indicator for Experiments 2 and 3). **Priority 1–3** and **notes** are reserved for later analyses. Missing indicator codes are preserved as `NA`, not recoded as zero.
 
-**File placement:** Put this `.Rmd`, the human Excel workbook, and (when available) the Experiments 1–2 AI workbook in `OOO_Curvature/Open_Answer_Analysis/`. Leave the experiment-specific `participant_cluster_lookup.csv` files where the main analyses exported them. This `.Rmd` accesses them at these *relative paths*:
+**File placement:** Put this `.Rmd`, the human Excel workbook (`Curvature Open Answers.xlsx`), and the LLM Excel workbook (`Curvature_Open_Answers_LLM_coded_detailed.xlsx`) in `Open_Answers/`. Leave the six `participant_cluster_lookup.csv` files where the main analyses exported them. This `.Rmd` accesses them at these *relative paths*:
 
 - `../Exp1/Exp1_curvature/participant_cluster_lookup.csv`
 - `../Exp1/Exp1_noInstr/participant_cluster_lookup.csv`
 - `../Exp2/Exp2_curvature/participant_cluster_lookup.csv`
 - `../Exp2/Exp2_noInstr/participant_cluster_lookup.csv`
-- `../Exp3/Exp3_curvature/participant_cluster_lookup.csv` (if available)
-- `../Exp3/Exp3_noInstr/participant_cluster_lookup.csv` (if available)
+- `../Exp3/Exp3_curvature/participant_cluster_lookup.csv`
+- `../Exp3/Exp3_noInstr/participant_cluster_lookup.csv`
 
-The relative paths are resolved from the `.Rmd` directory when knitting in RStudio. The human workbook is expected to have `exp1 curv`, `exp1 noInstr`, `exp2 curv`, `exp2 noInstr`, `exp3 curv`, and `exp3 noInstr` (case and spaces are normalized when matching). The AI workbook is only used for Experiments 1 and 2. If the AI workbook cannot be found, the script warns and continues with human coding only for all three experiments. Experiment 3 cluster CSVs are optional: if absent, Experiment 3 word clouds and nonclustered summaries still run, but its cluster plots are skipped.
-
-Experiment 1 and 2 previously contained 35, 36, 36 and 36 participant records, respectively. Experiment 3 counts are computed from the workbooks at runtime. Some rows without participant IDs are continuation text, **not additional participants**.
+The relative paths are resolved from the `.Rmd` directory when knitting in RStudio. Both workbooks contain `exp1 curv`, `exp1 noInstr`, `exp2 curv`, `exp2 noInstr`, `exp3 curv`, and `exp3 noInstr` (case and spaces are normalized when matching). Some rows without participant IDs are continuation text, **not additional participants**.
 
 # Setup and data import
 
@@ -51,22 +49,9 @@ library(tidyr)
 library(knitr)
 
 human_file <- "Curvature Open Answers.xlsx"
-ai_file <- "Curvature_Open_Answers_AI.xlsx"
+llm_file <- "Curvature_Open_Answers_LLM_coded_detailed.xlsx"
 
-if (!file.exists(human_file)) {
-  stop("Human Excel workbook not found: ", human_file,
-       ". Put it beside this Rmd file or change human_file.")
-}
-
-# Do NOT require an AI file for Experiment 3.
-# If the Exp1–2 AI workbook is unavailable, continue with human-only analyses
-# rather than failing at file.exists(ai_file).
-has_ai_exp12 <- file.exists(ai_file)
-if (!has_ai_exp12) {
-  warning("AI workbook for Experiments 1–2 not found: ", ai_file,
-          ". Running human coding only. If you expect Exp1–2 AI results, ",
-          "correct the ai_file path above.")
-}
+stopifnot(file.exists(human_file), file.exists(llm_file))
 ```
 
 ## Import all six study sheets 
@@ -149,7 +134,7 @@ read_answers <- function(file, sheet, experiment, condition, coder, optional = F
     )
 }
 
-# Human coding
+# Human coding (Experiments 1, 2, and 3)
 human <- bind_rows(
   read_answers(human_file, "exp1 curv",
                "Exp 1", "Curvature instruction", "Human"),
@@ -165,33 +150,23 @@ human <- bind_rows(
                "Exp 3", "No instruction", "Human")
 )
 
-# AI coding: Experiments 1 and 2 only (if their AI workbook is available).
-# Experiment 3 is deliberately excluded until you have AI-coded Exp3 sheets.
-ai <- if (has_ai_exp12) {
-  bind_rows(
-    read_answers(ai_file, "exp1 curv",
-                 "Exp 1", "Curvature instruction", "AI"),
-    read_answers(ai_file, "exp1 noInstr",
-                 "Exp 1", "No instruction", "AI"),
-    read_answers(ai_file, "exp2 curv",
-                 "Exp 2", "Curvature instruction", "AI"),
-    read_answers(ai_file, "exp2 noInstr",
-                 "Exp 2", "No instruction", "AI")
-  )
-} else {
-  # Same column schema as the human data, but no rows.
-  human[0, ] %>% mutate(coder = character())
-}
+# LLM coding (Experiments 1, 2, and 3)
+llm <- bind_rows(
+  read_answers(llm_file, "exp1 curv",
+               "Exp 1", "Curvature instruction", "LLM"),
+  read_answers(llm_file, "exp1 noInstr",
+               "Exp 1", "No instruction", "LLM"),
+  read_answers(llm_file, "exp2 curv",
+               "Exp 2", "Curvature instruction", "LLM"),
+  read_answers(llm_file, "exp2 noInstr",
+               "Exp 2", "No instruction", "LLM"),
+  read_answers(llm_file, "exp3 curv",
+               "Exp 3", "Curvature instruction", "LLM"),
+  read_answers(llm_file, "exp3 noInstr",
+               "Exp 3", "No instruction", "LLM")
+)
 
-# FUTURE EXP 3 AI CODING (intentionally inactive):
-# When an AI workbook with Exp3 sheets exists, add those read_answers()
-# calls here and include them in ai, then update the ID coverage check below.
-# read_answers(ai_file, "exp3 curv",
-#              "Exp 3", "Curvature instruction", "AI")
-# read_answers(ai_file, "exp3 noInstr",
-#              "Exp 3", "No instruction", "AI")
-
-answers <- bind_rows(human, ai)
+answers <- bind_rows(human, llm)
 
 # Check number of participants per group and coder
 answers %>%
@@ -208,25 +183,17 @@ duplicates <- answers %>%
 print(duplicates)
 stopifnot(nrow(duplicates) == 0)
 
-# Compare human vs AI participant coverage ONLY for Experiments 1 and 2.
-# Exp3 has human coding only, so its missing AI IDs are intentional.
+# Compare human vs LLM participant coverage across Experiments 1, 2, and 3.
 keys <- c("experiment", "condition", "subj_id")
 
-if (has_ai_exp12) {
-  human_ids <- human %>%
-    filter(experiment %in% c("Exp 1", "Exp 2")) %>%
-    select(all_of(keys))
-  ai_ids <- ai %>% select(all_of(keys))
+human_ids <- human %>% select(all_of(keys))
+llm_ids <- llm %>% select(all_of(keys))
 
-  only_human <- anti_join(human_ids, ai_ids, by = keys)
-  only_ai <- anti_join(ai_ids, human_ids, by = keys)
-  print(only_human)
-  print(only_ai)
-  stopifnot(nrow(only_human) == 0, nrow(only_ai) == 0)
-} else {
-  message("Skipping human–AI ID comparison: Exp1–2 AI workbook unavailable.")
-}
-
+only_human <- anti_join(human_ids, llm_ids, by = keys)
+only_llm <- anti_join(llm_ids, human_ids, by = keys)
+print(only_human)
+print(only_llm)
+stopifnot(nrow(only_human) == 0, nrow(only_llm) == 0)
 ```
 
 ## import cluster info
@@ -280,11 +247,11 @@ cluster_lookup <- bind_rows(
   ),
   read_clusters(
     "../Exp3/Exp3_curvature/participant_cluster_lookup.csv",
-    "Exp 3", "Curvature instruction", optional = TRUE
+    "Exp 3", "Curvature instruction"
   ),
   read_clusters(
     "../Exp3/Exp3_noInstr/participant_cluster_lookup.csv",
-    "Exp 3", "No instruction", optional = TRUE
+    "Exp 3", "No instruction"
   )
 )
 
@@ -574,7 +541,7 @@ plot_open_answers <- function(exp, cond) {
     mutate(
       feature = factor(feature, levels = feature_order),
       cluster = factor(cluster, levels = clusters, labels = cluster_labels[clusters]),
-      coder = factor(coder, levels = c("Human", "AI"))
+      coder = factor(coder, levels = c("Human", "LLM"))
     )
   
   # Colored cluster headings
@@ -673,12 +640,25 @@ plot_open_answers <- function(exp, cond) {
 ```
 
 ```{r}
+dir.create(
+  "open_answer_outputs/figures",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
 p_exp1_curv <- plot_open_answers(
   "Exp 1",
   "Curvature instruction"
 )
 
 print(p_exp1_curv)
+ggsave(
+  "open_answer_outputs/figures/exp1_curvature_mention_rates.png",
+  plot = p_exp1_curv,
+  width = 6.5,
+  height = 6.5,
+  dpi = 300
+)
 ```
 
 ```{r}
@@ -688,6 +668,13 @@ p_exp1_noinstr <- plot_open_answers(
 )
 
 print(p_exp1_noinstr)
+ggsave(
+  "open_answer_outputs/figures/exp1_noinstr_mention_rates.png",
+  plot = p_exp1_noinstr,
+  width = 6.5,
+  height = 6.5,
+  dpi = 300
+)
 ```
 
 ```{r}
@@ -697,6 +684,13 @@ p_exp2_curv <- plot_open_answers(
 )
 
 print(p_exp2_curv)
+ggsave(
+  "open_answer_outputs/figures/exp2_curvature_mention_rates.png",
+  plot = p_exp2_curv,
+  width = 6.5,
+  height = 6.5,
+  dpi = 300
+)
 ```
 
 ```{r}
@@ -706,250 +700,195 @@ p_exp2_noinstr <- plot_open_answers(
 )
 
 print(p_exp2_noinstr)
+ggsave(
+  "open_answer_outputs/figures/exp2_noinstr_mention_rates.png",
+  plot = p_exp2_noinstr,
+  width = 6.5,
+  height = 6.5,
+  dpi = 300
+)
 ```
 
 
-```{r exp3-human-mention-plots, fig.width=8, fig.height=5}
-
-# Experiment 3 — Human coding only
-
-dir.create(
-  "open_answer_outputs/figures",
-  recursive = TRUE,
-  showWarnings = FALSE
-)
-
-# Curvature instruction
+```{r}
 p_exp3_curv <- plot_open_answers(
-  "Exp 3", "Curvature instruction"
+  "Exp 3",
+  "Curvature instruction"
 )
 
-if (!is.null(p_exp3_curv)) {
-  print(p_exp3_curv)
+print(p_exp3_curv)
+ggsave(
+  "open_answer_outputs/figures/exp3_curvature_mention_rates.png",
+  plot = p_exp3_curv,
+  width = 6.5,
+  height = 6.5,
+  dpi = 300
+)
+```
 
-  ggsave(
-    "open_answer_outputs/figures/exp3_curvature_mention_rates.png",
-    plot = p_exp3_curv,
-    width = 11,
-    height = 5,
-    dpi = 300
-  )
-}
-
-# No instruction
+```{r}
 p_exp3_noinstr <- plot_open_answers(
-  "Exp 3", "No instruction"
+  "Exp 3",
+  "No instruction"
 )
 
-if (!is.null(p_exp3_noinstr)) {
-  print(p_exp3_noinstr)
-
-  ggsave(
-    "open_answer_outputs/figures/exp3_noinstr_mention_rates.png",
-    plot = p_exp3_noinstr,
-    width = 11,
-    height = 5,
-    dpi = 300
-  )
-}
+print(p_exp3_noinstr)
+ggsave(
+  "open_answer_outputs/figures/exp3_noinstr_mention_rates.png",
+  plot = p_exp3_noinstr,
+  width = 6.5,
+  height = 6.5,
+  dpi = 300
+)
 ```
 
 
 # Word Frequencies and Word Clouds
 
-The following nine word clouds use the revised term lists. Size-related terms have been
-removed from the submitted lists; other counts are preserved exactly as provided.
-Word sizes represent raw frequencies; percentages are calculated relative to the revised
-list for each feature. The plots above (feature mention rates) now also support Experiment 3 when cluster CSVs exist.
+This section reads `wordcloud_terms` and `wordcloud_features` directly from the coded LLM workbook (`Curvature_Open_Answers_LLM_coded_detailed.xlsx`) across all six experiment sheets (`exp1 curv`, `exp1 noInstr`, `exp2 curv`, `exp2 noInstr`, `exp3 curv`, `exp3 noInstr`) to generate:
+
+1. **Overall word clouds for each experiment** (all extracted vocabulary in `wordcloud_terms` for Experiment 1, Experiment 2, and Experiment 3).
+2. **Feature-specific word clouds for each experiment and feature** (using `wordcloud_features` to see which words are most mentioned for `smoothness`, `number of vertices`, and `angle` / `range`).
 
 ```{r word-frequency-tables}
 library(dplyr)
 library(ggplot2)
 library(ggwordcloud)
+library(readxl)
 library(tibble)
+library(purrr)
 
-# Convert named frequency vectors to tidy, percentage-adjusted tables
-make_word_freq <- function(counts) {
-  tibble(term = names(counts), frequency = as.integer(unname(counts))) %>%
+wordcloud_file <- llm_file
+
+stopifnot(file.exists(wordcloud_file))
+
+wc_sheet_specs <- tribble(
+  ~sheet,         ~experiment, ~condition,
+  "exp1 curv",    "Exp 1",     "Curvature instruction",
+  "exp1 noInstr", "Exp 1",     "No instruction",
+  "exp2 curv",    "Exp 2",     "Curvature instruction",
+  "exp2 noInstr", "Exp 2",     "No instruction",
+  "exp3 curv",    "Exp 3",     "Curvature instruction",
+  "exp3 noInstr", "Exp 3",     "No instruction"
+)
+
+read_wordcloud_tokens <- function(file, sheet, experiment, condition) {
+  sheet_found <- resolve_sheet(file, sheet, optional = TRUE)
+  if (is.na(sheet_found)) return(tibble())
+
+  dat <- read_excel(file, sheet = sheet_found, col_types = "text")
+  if (!("wordcloud_terms" %in% names(dat))) {
+    stop("Column 'wordcloud_terms' not found in sheet '", sheet_found, "' of ", file)
+  }
+  if (!("wordcloud_features" %in% names(dat))) {
+    dat$wordcloud_features <- ""
+  }
+
+  dat <- dat %>%
+    filter(!is.na(subj_id), trimws(subj_id) != "")
+
+  map_dfr(seq_len(nrow(dat)), function(i) {
+    raw_terms <- dat$wordcloud_terms[[i]]
+    raw_feats <- dat$wordcloud_features[[i]]
+
+    if (is.na(raw_terms) || trimws(raw_terms) == "") return(tibble())
+
+    terms_vec <- trimws(unlist(strsplit(as.character(raw_terms), ";", fixed = TRUE)))
+    terms_vec <- terms_vec[terms_vec != ""]
+    if (length(terms_vec) == 0) return(tibble())
+
+    feats_vec <- if (is.na(raw_feats) || trimws(raw_feats) == "") {
+      character(0)
+    } else {
+      trimws(unlist(strsplit(as.character(raw_feats), ";", fixed = TRUE)))
+    }
+
+    # Categorized terms are ordered first in wordcloud_terms; pad trailing uncategorized slots with ""
+    length(feats_vec) <- length(terms_vec)
+    feats_vec[is.na(feats_vec)] <- ""
+
+    tibble(
+      experiment = experiment,
+      condition = condition,
+      subj_id = normalize_id(dat$subj_id[[i]]),
+      term = terms_vec,
+      feature = feats_vec
+    )
+  })
+}
+
+wc_tokens <- pmap_dfr(wc_sheet_specs, function(sheet, experiment, condition) {
+  read_wordcloud_tokens(wordcloud_file, sheet, experiment, condition)
+})
+
+count_word_freq <- function(df) {
+  df %>%
+    filter(!is.na(term), term != "") %>%
+    count(term, name = "frequency") %>%
     arrange(desc(frequency), term) %>%
     mutate(percentage = 100 * frequency / sum(frequency))
 }
 
-# EXP1 SMOOTHNESS — 84 total mentions
-word_freq <- make_word_freq(c(
-  "sharpness" = 19,
-  "curved" = 13,
-  "pointiness" = 7,
-  "smoothness" = 7,
-  "roundness" = 6,
-  "straight" = 6,
-  "softness" = 4,
-  "corner" = 2,
-  "curvature" = 2,
-  "hard" = 2,
-  "angle" = 1,
-  "brash" = 1,
-  "continuous" = 1,
-  "curve" = 1,
-  "curviness" = 1,
-  "curvy" = 1,
-  "harshness" = 1,
-  "jagged" = 1,
-  "peaks" = 1,
-  "pointy" = 1,
-  "rigidity" = 1,
-  "spikes" = 1,
-  "tips" = 1,
-  "triangle-like" = 1,
-  "wave" = 1,
-  "zigzag" = 1
-))
+# 1. Overall word frequency tables for each experiment (all terms in wordcloud_terms)
+exp1_overall_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 1") %>%
+  count_word_freq()
 
-# EXP1 VERTICES — 47 total mentions
-vertices_word_freq <- make_word_freq(c(
-  "number of bumps" = 13,
-  "number of curves" = 10,
-  "number of peaks" = 6,
-  "frequency" = 2,
-  "number of angles" = 2,
-  "number of lines" = 2,
-  "number of turns" = 2,
-  "number of zigzags" = 2,
-  "number of corners" = 1,
-  "number of curls" = 1,
-  "number of dips" = 1,
-  "number of edges" = 1,
-  "number of fluctuations" = 1,
-  "number of humps" = 1,
-  "number of lumps" = 1,
-  "number of vertices" = 1
-))
+exp2_overall_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 2") %>%
+  count_word_freq()
 
-# EXP1 ANGLE — 25 total mentions
-angle_word_freq <- make_word_freq(c(
-  "height" = 5,
-  "angle" = 4,
-  "shape" = 3,
-  "depth" = 2,
-  "steepness" = 2,
-  "angularity" = 1,
-  "frequency" = 1,
-  "length" = 1,
-  "obtuse" = 1,
-  "radius" = 1,
-  "shallow" = 1,
-  "shape of curve" = 1,
-  "slope" = 1,
-  "steep" = 1
-))
+exp3_overall_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 3") %>%
+  count_word_freq()
 
-# EXP2 SMOOTHNESS — 94 total mentions
-exp2_smoothness_word_freq <- make_word_freq(c(
-  "sharp" = 23,
-  "round" = 13,
-  "pointy" = 7,
-  "smooth" = 7,
-  "spikiness" = 7,
-  "curvy" = 6,
-  "curved" = 4,
-  "straight" = 4,
-  "soft" = 3,
-  "square" = 3,
-  "angles" = 2,
-  "circular" = 2,
-  "blocky" = 1,
-  "blunt" = 1,
-  "defined" = 1,
-  "edges" = 1,
-  "flat edges" = 1,
-  "fluidity" = 1,
-  "hard" = 1,
-  "harsh" = 1,
-  "lines" = 1,
-  "loop" = 1,
-  "ridged" = 1,
-  "roundness" = 1,
-  "sharpness" = 1
-))
+# 2. Feature-specific word frequency tables (using wordcloud_features)
+# Exp 1: smoothness, number of vertices, angle
+word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 1", feature == "smoothness") %>%
+  count_word_freq()
 
-# EXP2 VERTICES — 15 total mentions
-exp2_vertices_word_freq <- make_word_freq(c(
-  "number of edges" = 3,
-  "number of curves" = 2,
-  "number of spikes" = 2,
-  "amount of points" = 1,
-  "complexity" = 1,
-  "frequency of peaks" = 1,
-  "number of angles" = 1,
-  "number of bumps" = 1,
-  "number of grooves" = 1,
-  "number of loops" = 1,
-  "number of protrusions" = 1
-))
+vertices_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 1", feature == "number of vertices") %>%
+  count_word_freq()
 
-# EXP2 RANGE — 4 total mentions
-exp2_range_word_freq <- make_word_freq(c(
-  "circular" = 1,
-  "complexity" = 1,
-  "height of spikes" = 1,
-  "intensity of peaks" = 1
-))
+angle_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 1", feature == "angle") %>%
+  count_word_freq()
 
-# EXP3 SMOOTHNESS — 83 total mentions
-exp3_smoothness_word_freq <- make_word_freq(c(
-  "sharp" = 20,
-  "round" = 16,
-  "pointy" = 9,
-  "smooth" = 9,
-  "curvy" = 4,
-  "straight" = 4,
-  "curved" = 4,
-  "spikes" = 3,
-  "edges" = 3,
-  "soft" = 3,
-  "dull" = 1,
-  "squared" = 1,
-  "jagged" = 1,
-  "straight curved" = 1,
-  "curves" = 1,
-  "rigid" = 1,
-  "corner" = 1,
-  "blobby" = 1
-))
+# Exp 2: smoothness, number of vertices, range
+exp2_smoothness_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 2", feature == "smoothness") %>%
+  count_word_freq()
 
-# EXP3 VERTICES — 18 total mentions
-exp3_vertices_word_freq <- make_word_freq(c(
-  "number of spikes" = 4,
-  "number of curves" = 3,
-  "number of points" = 3,
-  "number of protrusions" = 3,
-  "number of vertices" = 1,
-  "number of corners" = 1,
-  "number of sharp edges" = 1,
-  "number of edges" = 1,
-  "number of sharp angles" = 1
-))
+exp2_vertices_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 2", feature == "number of vertices") %>%
+  count_word_freq()
 
-# EXP3 RANGE — 2 total mentions
-exp3_range_word_freq <- make_word_freq(c(
-  "degree of angle" = 1,
-  "radial regularity" = 1
-))
+exp2_range_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 2", feature == "range") %>%
+  count_word_freq()
 
-# Ensure copied frequency lists sum to the expected number of mentions
-stopifnot(
-  sum(word_freq$frequency) == 84,
-  sum(vertices_word_freq$frequency) == 47,
-  sum(angle_word_freq$frequency) == 25,
-  sum(exp2_smoothness_word_freq$frequency) == 94,
-  sum(exp2_vertices_word_freq$frequency) == 15,
-  sum(exp2_range_word_freq$frequency) == 4,
-  sum(exp3_smoothness_word_freq$frequency) == 83,
-  sum(exp3_vertices_word_freq$frequency) == 18,
-  sum(exp3_range_word_freq$frequency) == 2
-)
+# Exp 3: smoothness, number of vertices, range
+exp3_smoothness_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 3", feature == "smoothness") %>%
+  count_word_freq()
 
-# Inspect each frequency table and revised percentages
+exp3_vertices_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 3", feature == "number of vertices") %>%
+  count_word_freq()
+
+exp3_range_word_freq <- wc_tokens %>%
+  filter(experiment == "Exp 3", feature == "range") %>%
+  count_word_freq()
+
+# Inspect overall and feature-specific frequency tables
+cat("=== OVERALL WORD FREQUENCIES BY EXPERIMENT ===\n")
+print(exp1_overall_word_freq, n = 25)
+print(exp2_overall_word_freq, n = 25)
+print(exp3_overall_word_freq, n = 25)
+
+cat("\n=== FEATURE-SPECIFIC WORD FREQUENCIES (EXP 1–3) ===\n")
 print(word_freq, n = Inf)
 print(vertices_word_freq, n = Inf)
 print(angle_word_freq, n = Inf)
@@ -961,17 +900,21 @@ print(exp3_vertices_word_freq, n = Inf)
 print(exp3_range_word_freq, n = Inf)
 ```
 
-## Word clouds (Experiments 1–3)
+## 1. Overall Word Clouds for Each Experiment (Experiments 1–3)
 
-```{r plot-nine-wordclouds, fig.width=10, fig.height=6}
-# One plotting function keeps formatting consistent across all nine clouds.
+```{r plot-overall-wordclouds, fig.width=10, fig.height=6}
 dir.create(
   "open_answer_outputs/figures",
   recursive = TRUE,
   showWarnings = FALSE
 )
 
-plot_wordcloud <- function(dat, low, high, filename, shorten_number_of = FALSE) {
+plot_wordcloud <- function(dat, low, high, filename, shorten_number_of = FALSE, title = NULL) {
+  if (nrow(dat) == 0) {
+    message("No terms found for ", filename, "; skipping plot.")
+    return(invisible(NULL))
+  }
+
   dat <- dat %>%
     mutate(label = if (shorten_number_of) sub("^number of ", "", term) else term)
 
@@ -981,7 +924,14 @@ plot_wordcloud <- function(dat, low, high, filename, shorten_number_of = FALSE) 
     scale_size_area(max_size = 60) +
     scale_color_gradient(low = low, high = high) +
     theme_void() +
-    theme(legend.position = "none")
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5)
+    )
+
+  if (!is.null(title)) {
+    p <- p + labs(title = title)
+  }
 
   print(p)
   ggsave(
@@ -994,43 +944,77 @@ plot_wordcloud <- function(dat, low, high, filename, shorten_number_of = FALSE) 
   invisible(p)
 }
 
-# Exp 1 — consistent experiment-prefixed output names
+# Overall word clouds per experiment
+p_exp1_overall_wordcloud <- plot_wordcloud(
+  exp1_overall_word_freq, "#D1D5DB", "#1F2937",
+  "exp1_overall_wordcloud.png",
+  title = "Experiment 1 — Overall Mentioned Terms"
+)
+
+p_exp2_overall_wordcloud <- plot_wordcloud(
+  exp2_overall_word_freq, "#D1D5DB", "#1F2937",
+  "exp2_overall_wordcloud.png",
+  title = "Experiment 2 — Overall Mentioned Terms"
+)
+
+p_exp3_overall_wordcloud <- plot_wordcloud(
+  exp3_overall_word_freq, "#D1D5DB", "#1F2937",
+  "exp3_overall_wordcloud.png",
+  title = "Experiment 3 — Overall Mentioned Terms"
+)
+```
+
+## 2. Word Clouds by Experiment and Feature (Experiments 1–3)
+
+```{r plot-nine-wordclouds, fig.width=10, fig.height=6}
+# Exp 1 — Smoothness, Number of Vertices, Angle
 p_wordcloud <- plot_wordcloud(
-  word_freq, "#FBC8C4", "#D94B42", "exp1_smoothness_wordcloud.png"
+  word_freq, "#FBC8C4", "#D94B42", "exp1_smoothness_wordcloud.png",
+  title = "Experiment 1 — Smoothness"
 )
 p_vertices_wordcloud <- plot_wordcloud(
   vertices_word_freq, "#A5E8B7", "#008A29", "exp1_vertices_wordcloud.png",
-  shorten_number_of = TRUE
+  shorten_number_of = TRUE,
+  title = "Experiment 1 — Number of Vertices"
 )
 p_angle_wordcloud <- plot_wordcloud(
-  angle_word_freq, "#BFD6FF", "#326BC9", "exp1_angle_wordcloud.png"
+  angle_word_freq, "#BFD6FF", "#326BC9", "exp1_angle_wordcloud.png",
+  title = "Experiment 1 — Angle"
 )
 
-# Exp 2
+# Exp 2 — Smoothness, Number of Vertices, Range
 p_exp2_smoothness_wordcloud <- plot_wordcloud(
   exp2_smoothness_word_freq, "#FBC8C4", "#D94B42",
-  "exp2_smoothness_wordcloud.png"
+  "exp2_smoothness_wordcloud.png",
+  title = "Experiment 2 — Smoothness"
 )
 p_exp2_vertices_wordcloud <- plot_wordcloud(
   exp2_vertices_word_freq, "#A5E8B7", "#008A29",
-  "exp2_vertices_wordcloud.png", shorten_number_of = TRUE
+  "exp2_vertices_wordcloud.png",
+  shorten_number_of = TRUE,
+  title = "Experiment 2 — Number of Vertices"
 )
 p_exp2_range_wordcloud <- plot_wordcloud(
   exp2_range_word_freq, "#BFD6FF", "#326BC9",
-  "exp2_range_wordcloud.png"
+  "exp2_range_wordcloud.png",
+  title = "Experiment 2 — Range"
 )
 
-# Exp 3 — same palette and labels as Exp 2
+# Exp 3 — Smoothness, Number of Vertices, Range
 p_exp3_smoothness_wordcloud <- plot_wordcloud(
   exp3_smoothness_word_freq, "#FBC8C4", "#D94B42",
-  "exp3_smoothness_wordcloud.png"
+  "exp3_smoothness_wordcloud.png",
+  title = "Experiment 3 — Smoothness"
 )
 p_exp3_vertices_wordcloud <- plot_wordcloud(
   exp3_vertices_word_freq, "#A5E8B7", "#008A29",
-  "exp3_vertices_wordcloud.png", shorten_number_of = TRUE
+  "exp3_vertices_wordcloud.png",
+  shorten_number_of = TRUE,
+  title = "Experiment 3 — Number of Vertices"
 )
 p_exp3_range_wordcloud <- plot_wordcloud(
   exp3_range_word_freq, "#BFD6FF", "#326BC9",
-  "exp3_range_wordcloud.png"
+  "exp3_range_wordcloud.png",
+  title = "Experiment 3 — Range"
 )
 ```
