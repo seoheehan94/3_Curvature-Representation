@@ -47,7 +47,7 @@ library(tidyr)
 library(knitr)
 
 human_file <- "Curvature Open Answers.xlsx"
-ai_file <- "Curvature_Open_Answers_AI.xlsx"
+ai_file <- "Curvature_Open_Answers_LLM_coded_detailed.xlsx"
 
 stopifnot(file.exists(human_file), file.exists(ai_file))
 ```
