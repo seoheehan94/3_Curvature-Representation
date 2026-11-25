@@ -711,7 +711,7 @@ print(p_exp2_noinstr)
 ```
 
 
-```{r exp3-human-mention-plots, fig.width=11, fig.height=5}
+```{r exp3-human-mention-plots, fig.width=8, fig.height=5}
 
 # Experiment 3 — Human coding only
 
