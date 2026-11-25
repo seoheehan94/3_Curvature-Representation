@@ -1,6 +1,6 @@
 ---
 title: "Curvature open-answer analysis by participant cluster"
-subtitle: "Human and AI coding, separated by experiment and instruction condition"
+subtitle: "Human and AI coding (Experiments 1–2); human coding only (Experiment 3)"
 author: ""
 date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
@@ -12,25 +12,29 @@ output:
 
 # Overview
 
-This file reads the two annotated workbooks independently, attaches **one cluster assignment per participant from the corresponding experiment × condition cluster CSV**, and conducts **separate** analyses for four groups:
+This file reads the two annotated workbooks independently, attaches **one cluster assignment per participant from the corresponding experiment × condition cluster CSV**, and conducts **separate** analyses for six groups:
 
 1. Experiment 1 — Curvature instruction
 2. Experiment 1 — No instruction
 3. Experiment 2 — Curvature instruction
 4. Experiment 2 — No instruction
+5. Experiment 3 — Curvature instruction
+6. Experiment 3 — No instruction
 
-For each group, **human and AI coding are shown separately** and compared for agreement. Only five binary indicators are analyzed. **Priority 1–3**, **notes**, and the Experiment 2 **animal-like** indicator are reserved for later analyses. Missing indicator codes are preserved as `NA`, not recoded as zero.
+For Experiments 1 and 2, **human and AI coding are shown separately**. Experiment 3 currently uses **human coding only**; the AI slot is reserved for future data. The feature-mention analysis includes the coded indicators (including Size and the animal-like indicator for Experiments 2 and 3). **Priority 1–3** and **notes** are reserved for later analyses. Missing indicator codes are preserved as `NA`, not recoded as zero.
 
-**File placement:** Put this `.Rmd` and both Excel workbooks in `OOO_Curvature/Open_Answer_Analysis/`. Leave the four `participant_cluster_lookup.csv` files where the main analyses exported them. This `.Rmd` accesses them at these *relative paths*:
+**File placement:** Put this `.Rmd`, the human Excel workbook, and (when available) the Experiments 1–2 AI workbook in `OOO_Curvature/Open_Answer_Analysis/`. Leave the experiment-specific `participant_cluster_lookup.csv` files where the main analyses exported them. This `.Rmd` accesses them at these *relative paths*:
 
 - `../Exp1/Exp1_curvature/participant_cluster_lookup.csv`
 - `../Exp1/Exp1_noInstr/participant_cluster_lookup.csv`
 - `../Exp2/Exp2_curvature/participant_cluster_lookup.csv`
 - `../Exp2/Exp2_noInstr/participant_cluster_lookup.csv`
+- `../Exp3/Exp3_curvature/participant_cluster_lookup.csv` (if available)
+- `../Exp3/Exp3_noInstr/participant_cluster_lookup.csv` (if available)
 
-The relative paths are resolved from the `.Rmd` directory when knitting in RStudio. The human workbook has four study sheets; the AI workbook has those same four sheets plus a `Coding guide`, which is not used.
+The relative paths are resolved from the `.Rmd` directory when knitting in RStudio. The human workbook is expected to have `exp1 curv`, `exp1 noInstr`, `exp2 curv`, `exp2 noInstr`, `exp3 curv`, and `exp3 noInstr` (case and spaces are normalized when matching). The AI workbook is only used for Experiments 1 and 2. If the AI workbook cannot be found, the script warns and continues with human coding only for all three experiments. Experiment 3 cluster CSVs are optional: if absent, Experiment 3 word clouds and nonclustered summaries still run, but its cluster plots are skipped.
 
-The current workbooks contain **35, 36, 36 and 36** participants, respectively, for a total of **143 distinct IDs**. Participant IDs are unique across the four experiment–condition groups. Some rows without participant IDs are continuation text, **not additional participants**.
+Experiment 1 and 2 previously contained 35, 36, 36 and 36 participant records, respectively. Experiment 3 counts are computed from the workbooks at runtime. Some rows without participant IDs are continuation text, **not additional participants**.
 
 # Setup and data import
 
@@ -47,12 +51,27 @@ library(tidyr)
 library(knitr)
 
 human_file <- "Curvature Open Answers.xlsx"
-ai_file <- "Curvature_Open_Answers_AI.xlsx"
+# Existing AI coding workbook for Experiments 1–2 ONLY.
+# Adjust the filename/path below if your AI workbook is stored elsewhere.
+ai_file <- "Curvature_Open_Answers_AI_Old.xlsx"
 
-stopifnot(file.exists(human_file), file.exists(ai_file))
+if (!file.exists(human_file)) {
+  stop("Human Excel workbook not found: ", human_file,
+       ". Put it beside this Rmd file or change human_file.")
+}
+
+# Do NOT require an AI file for Experiment 3.
+# If the Exp1–2 AI workbook is unavailable, continue with human-only analyses
+# rather than failing at file.exists(ai_file).
+has_ai_exp12 <- file.exists(ai_file)
+if (!has_ai_exp12) {
+  warning("AI workbook for Experiments 1–2 not found: ", ai_file,
+          ". Running human coding only. If you expect Exp1–2 AI results, ",
+          "correct the ai_file path above.")
+}
 ```
 
-## Import all excel four sheets 
+## Import all six study sheets 
 ```{r}
 normalize_id <- function(x) {
   sub("\\.0+$", "", trimws(as.character(x)))
@@ -70,13 +89,36 @@ binary_code <- function(x) {
 }
 
 
-read_answers <- function(file, sheet, experiment, condition, coder) {
+# Resolve sheet names despite changes in case/spacing.
+resolve_sheet <- function(file, requested, optional = FALSE) {
+  available <- readxl::excel_sheets(file)
+  norm <- function(x) gsub("[^a-z0-9]", "", tolower(x))
+  match <- which(norm(available) == norm(requested))
+  if (length(match) == 1L) return(available[[match]])
+  if (optional) {
+    message("Skipping missing optional sheet '", requested, "' in ", basename(file))
+    return(NA_character_)
+  }
+  stop("Missing Excel sheet '", requested, "' in ", basename(file),
+       ". Available sheets: ", paste(available, collapse = ", "))
+}
 
-  dat <- read_excel(file, sheet = sheet, col_types = "text")
+read_answers <- function(file, sheet, experiment, condition, coder, optional = FALSE) {
+  sheet_found <- resolve_sheet(file, sheet, optional = optional)
+  if (is.na(sheet_found)) {
+    return(tibble(
+      experiment = character(), condition = character(), coder = character(),
+      subj_id = character(), answer = character(), smoothness = integer(),
+      vertices = integer(), third_feature = integer(), intuition = integer(),
+      globalness = integer(), animal_like = integer(), size = integer()
+    ))
+  }
 
-  if (experiment == "Exp 2") {
+  dat <- read_excel(file, sheet = sheet_found, col_types = "text")
 
-    # Exp2 has 6 indicators (columns 3–8)
+  if (experiment %in% c("Exp 2", "Exp 3")) {
+
+    # Experiments 2 and 3: 6 indicators (columns 3–8), plus size.
     dat <- dat[, 1:9]
 
     names(dat) <- c(
@@ -118,20 +160,38 @@ human <- bind_rows(
   read_answers(human_file, "exp2 curv",
                "Exp 2", "Curvature instruction", "Human"),
   read_answers(human_file, "exp2 noInstr",
-               "Exp 2", "No instruction", "Human")
+               "Exp 2", "No instruction", "Human"),
+  read_answers(human_file, "exp3 curv",
+               "Exp 3", "Curvature instruction", "Human"),
+  read_answers(human_file, "exp3 noInstr",
+               "Exp 3", "No instruction", "Human")
 )
 
-# AI coding
-ai <- bind_rows(
-  read_answers(ai_file, "exp1 curv",
-               "Exp 1", "Curvature instruction", "AI"),
-  read_answers(ai_file, "exp1 noInstr",
-               "Exp 1", "No instruction", "AI"),
-  read_answers(ai_file, "exp2 curv",
-               "Exp 2", "Curvature instruction", "AI"),
-  read_answers(ai_file, "exp2 noInstr",
-               "Exp 2", "No instruction", "AI")
-)
+# AI coding: Experiments 1 and 2 only (if their AI workbook is available).
+# Experiment 3 is deliberately excluded until you have AI-coded Exp3 sheets.
+ai <- if (has_ai_exp12) {
+  bind_rows(
+    read_answers(ai_file, "exp1 curv",
+                 "Exp 1", "Curvature instruction", "AI"),
+    read_answers(ai_file, "exp1 noInstr",
+                 "Exp 1", "No instruction", "AI"),
+    read_answers(ai_file, "exp2 curv",
+                 "Exp 2", "Curvature instruction", "AI"),
+    read_answers(ai_file, "exp2 noInstr",
+                 "Exp 2", "No instruction", "AI")
+  )
+} else {
+  # Same column schema as the human data, but no rows.
+  human[0, ] %>% mutate(coder = character())
+}
+
+# FUTURE EXP 3 AI CODING (intentionally inactive):
+# When an AI workbook with Exp3 sheets exists, add those read_answers()
+# calls here and include them in ai, then update the ID coverage check below.
+# read_answers(ai_file, "exp3 curv",
+#              "Exp 3", "Curvature instruction", "AI")
+# read_answers(ai_file, "exp3 noInstr",
+#              "Exp 3", "No instruction", "AI")
 
 answers <- bind_rows(human, ai)
 
@@ -150,28 +210,37 @@ duplicates <- answers %>%
 print(duplicates)
 stopifnot(nrow(duplicates) == 0)
 
-# Check human and AI participant coverage
+# Compare human vs AI participant coverage ONLY for Experiments 1 and 2.
+# Exp3 has human coding only, so its missing AI IDs are intentional.
 keys <- c("experiment", "condition", "subj_id")
 
-human_ids <- human %>% select(all_of(keys))
-ai_ids <- ai %>% select(all_of(keys))
+if (has_ai_exp12) {
+  human_ids <- human %>%
+    filter(experiment %in% c("Exp 1", "Exp 2")) %>%
+    select(all_of(keys))
+  ai_ids <- ai %>% select(all_of(keys))
 
-only_human <- anti_join(human_ids, ai_ids, by = keys)
-only_ai <- anti_join(ai_ids, human_ids, by = keys)
+  only_human <- anti_join(human_ids, ai_ids, by = keys)
+  only_ai <- anti_join(ai_ids, human_ids, by = keys)
+  print(only_human)
+  print(only_ai)
+  stopifnot(nrow(only_human) == 0, nrow(only_ai) == 0)
+} else {
+  message("Skipping human–AI ID comparison: Exp1–2 AI workbook unavailable.")
+}
 
-print(only_human)
-print(only_ai)
-
-stopifnot(
-  nrow(only_human) == 0,
-  nrow(only_ai) == 0
-)
 ```
 
 ## import cluster info
 ```{r}
-read_clusters <- function(file, experiment, condition) {
-  if (!file.exists(file)) stop("Missing cluster CSV: ", file)
+read_clusters <- function(file, experiment, condition, optional = FALSE) {
+  if (!file.exists(file)) {
+    if (!optional) stop("Missing cluster CSV: ", file)
+    message("Missing optional Experiment 3 cluster CSV: ", file,
+            ". Skipping cluster-specific results for this group.")
+    return(tibble(experiment = character(), condition = character(),
+                  subj_id = character(), cluster = character()))
+  }
 
   dat <- read_csv(
     file,
@@ -210,6 +279,14 @@ cluster_lookup <- bind_rows(
   read_clusters(
     "../Exp2/Exp2_noInstr/participant_cluster_lookup.csv",
     "Exp 2", "No instruction"
+  ),
+  read_clusters(
+    "../Exp3/Exp3_curvature/participant_cluster_lookup.csv",
+    "Exp 3", "Curvature instruction", optional = TRUE
+  ),
+  read_clusters(
+    "../Exp3/Exp3_noInstr/participant_cluster_lookup.csv",
+    "Exp 3", "No instruction", optional = TRUE
   )
 )
 
@@ -277,7 +354,7 @@ answers_long_all <- answers_all %>%
       feature == "smoothness" ~ "Smoothness",
       feature == "vertices" ~ "Vertices",
       feature == "third_feature" & experiment == "Exp 1" ~ "Angle",
-      feature == "third_feature" & experiment == "Exp 2" ~ "Range",
+      feature == "third_feature" & experiment %in% c("Exp 2", "Exp 3") ~ "Range",
       feature == "intuition" ~ "Intuition",
       feature == "globalness" ~ "Globalness",
       feature == "animal_like" ~ "Animal-like",
@@ -404,6 +481,26 @@ mention_rates %>%
 ```
 
 ```{r}
+# Experiment 3, curvature instruction
+mention_rates %>%
+  filter(experiment == "Exp 3", condition == "Curvature instruction") %>%
+  select(coder, cluster, feature, n_mentioned, n_coded, percentage) %>%
+  mutate(percentage = round(percentage, 1)) %>%
+  as.data.frame() %>%
+  print(row.names = FALSE)
+```
+
+```{r}
+# Experiment 3, no instruction
+mention_rates %>%
+  filter(experiment == "Exp 3", condition == "No instruction") %>%
+  select(coder, cluster, feature, n_mentioned, n_coded, percentage) %>%
+  mutate(percentage = round(percentage, 1)) %>%
+  as.data.frame() %>%
+  print(row.names = FALSE)
+```
+
+```{r}
 knitr::opts_chunk$set(
   fig.width = 6.5,
   fig.height = 6.5,
@@ -436,7 +533,13 @@ plot_open_answers <- function(exp, cond) {
       experiment == exp,
       condition == cond
     )
-  
+
+  if (nrow(dat) == 0) {
+    message("No cluster-coded results for ", exp, " / ", cond,
+            "; skipping this mention-rate chart.")
+    return(invisible(NULL))
+  }
+
   cluster_ns <- answers_clustered %>%
     filter(
       experiment == exp,
@@ -607,13 +710,27 @@ p_exp2_noinstr <- plot_open_answers(
 print(p_exp2_noinstr)
 ```
 
+```{r}
+p_exp3_curv <- plot_open_answers(
+  "Exp 3", "Curvature instruction"
+)
+if (!is.null(p_exp3_curv)) print(p_exp3_curv)
+```
+
+```{r}
+p_exp3_noinstr <- plot_open_answers(
+  "Exp 3", "No instruction"
+)
+if (!is.null(p_exp3_noinstr)) print(p_exp3_noinstr)
+```
+
 
 # Word Frequencies and Word Clouds
 
-The following six word clouds use the revised term lists. Size-related terms have been
+The following nine word clouds use the revised term lists. Size-related terms have been
 removed from the submitted lists; other counts are preserved exactly as provided.
 Word sizes represent raw frequencies; percentages are calculated relative to the revised
-list for each feature. The plots above (feature mention rates) are unchanged.
+list for each feature. The plots above (feature mention rates) now also support Experiment 3 when cluster CSVs exist.
 
 ```{r word-frequency-tables}
 library(dplyr)
@@ -748,6 +865,47 @@ exp2_range_word_freq <- make_word_freq(c(
   "intensity of peaks" = 1
 ))
 
+# EXP3 SMOOTHNESS — 83 total mentions
+exp3_smoothness_word_freq <- make_word_freq(c(
+  "sharp" = 20,
+  "round" = 16,
+  "pointy" = 9,
+  "smooth" = 9,
+  "curvy" = 4,
+  "straight" = 4,
+  "curved" = 4,
+  "spikes" = 3,
+  "edges" = 3,
+  "soft" = 3,
+  "dull" = 1,
+  "squared" = 1,
+  "jagged" = 1,
+  "straight curved" = 1,
+  "curves" = 1,
+  "rigid" = 1,
+  "corner" = 1,
+  "blobby" = 1
+))
+
+# EXP3 VERTICES — 18 total mentions
+exp3_vertices_word_freq <- make_word_freq(c(
+  "number of spikes" = 4,
+  "number of curves" = 3,
+  "number of points" = 3,
+  "number of protrusions" = 3,
+  "number of vertices" = 1,
+  "number of corners" = 1,
+  "number of sharp edges" = 1,
+  "number of edges" = 1,
+  "number of sharp angles" = 1
+))
+
+# EXP3 RANGE — 2 total mentions
+exp3_range_word_freq <- make_word_freq(c(
+  "degree of angle" = 1,
+  "radial regularity" = 1
+))
+
 # Ensure copied frequency lists sum to the expected number of mentions
 stopifnot(
   sum(word_freq$frequency) == 84,
@@ -755,7 +913,10 @@ stopifnot(
   sum(angle_word_freq$frequency) == 25,
   sum(exp2_smoothness_word_freq$frequency) == 94,
   sum(exp2_vertices_word_freq$frequency) == 15,
-  sum(exp2_range_word_freq$frequency) == 4
+  sum(exp2_range_word_freq$frequency) == 4,
+  sum(exp3_smoothness_word_freq$frequency) == 83,
+  sum(exp3_vertices_word_freq$frequency) == 18,
+  sum(exp3_range_word_freq$frequency) == 2
 )
 
 # Inspect each frequency table and revised percentages
@@ -765,12 +926,15 @@ print(angle_word_freq, n = Inf)
 print(exp2_smoothness_word_freq, n = Inf)
 print(exp2_vertices_word_freq, n = Inf)
 print(exp2_range_word_freq, n = Inf)
+print(exp3_smoothness_word_freq, n = Inf)
+print(exp3_vertices_word_freq, n = Inf)
+print(exp3_range_word_freq, n = Inf)
 ```
 
-## Word clouds (Experiment 1 and Experiment 2)
+## Word clouds (Experiments 1–3)
 
-```{r plot-six-wordclouds, fig.width=10, fig.height=6}
-# One plotting function keeps formatting consistent across all six clouds.
+```{r plot-nine-wordclouds, fig.width=10, fig.height=6}
+# One plotting function keeps formatting consistent across all nine clouds.
 dir.create(
   "open_answer_outputs/figures",
   recursive = TRUE,
@@ -800,7 +964,7 @@ plot_wordcloud <- function(dat, low, high, filename, shorten_number_of = FALSE) 
   invisible(p)
 }
 
-# Exp 1 — retains original output names
+# Exp 1 — consistent experiment-prefixed output names
 p_wordcloud <- plot_wordcloud(
   word_freq, "#FBC8C4", "#D94B42", "exp1_smoothness_wordcloud.png"
 )
@@ -812,7 +976,7 @@ p_angle_wordcloud <- plot_wordcloud(
   angle_word_freq, "#BFD6FF", "#326BC9", "exp1_angle_wordcloud.png"
 )
 
-# Exp 2 — new figures
+# Exp 2
 p_exp2_smoothness_wordcloud <- plot_wordcloud(
   exp2_smoothness_word_freq, "#FBC8C4", "#D94B42",
   "exp2_smoothness_wordcloud.png"
@@ -824,5 +988,19 @@ p_exp2_vertices_wordcloud <- plot_wordcloud(
 p_exp2_range_wordcloud <- plot_wordcloud(
   exp2_range_word_freq, "#BFD6FF", "#326BC9",
   "exp2_range_wordcloud.png"
+)
+
+# Exp 3 — same palette and labels as Exp 2
+p_exp3_smoothness_wordcloud <- plot_wordcloud(
+  exp3_smoothness_word_freq, "#FBC8C4", "#D94B42",
+  "exp3_smoothness_wordcloud.png"
+)
+p_exp3_vertices_wordcloud <- plot_wordcloud(
+  exp3_vertices_word_freq, "#A5E8B7", "#008A29",
+  "exp3_vertices_wordcloud.png", shorten_number_of = TRUE
+)
+p_exp3_range_wordcloud <- plot_wordcloud(
+  exp3_range_word_freq, "#BFD6FF", "#326BC9",
+  "exp3_range_wordcloud.png"
 )
 ```
